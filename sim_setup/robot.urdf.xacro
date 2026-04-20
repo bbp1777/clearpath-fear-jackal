@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="j100-0000">
+
+  <!-- Common -->
+  <xacro:include filename="$(find clearpath_platform_description)/urdf/common.urdf.xacro"/>
+
+  <!-- Platform -->
+  <xacro:include filename="$(find clearpath_platform_description)/urdf/j100/j100.urdf.xacro"/>
+  <xacro:j100 control="diff_4wd" front_wheels="outdoor" rear_wheels="outdoor"/>
+
+
+  <!-- Attachments -->
+
+
+  <!-- Links -->
+
+
+  <!-- Mounts -->
+
+
+  <!-- Sensors -->
+
+  <!-- camera_0 -->
+  <xacro:include filename="$(find clearpath_sensors_description)/urdf/intel_realsense.urdf.xacro"/>
+  <xacro:intel_realsense name="camera_0" parent_link="base_link" update_rate="30" image_height="480" image_width="640" model="d435">
+    <origin xyz="0.24 0.0 0.18" rpy="0.0 0.0 0.0"/>
+  </xacro:intel_realsense>
+
+
+  <!-- Manipulators -->
+
+
+  <!-- Extras -->
+
+  <xacro:include filename="$(find fear_jackal_sim)/urdf/respeaker_mic.urdf.xacro"/>
+
+</robot>

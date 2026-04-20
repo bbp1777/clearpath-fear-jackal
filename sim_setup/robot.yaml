@@ -1,0 +1,36 @@
+serial_number: j100-0000
+version: 0
+
+system:
+  ros2:
+    namespace: jackal_sidewalk
+    domain_id: 0
+    middleware:
+      implementation: rmw_fastrtps_cpp
+      discovery: simple
+    workspaces:
+      - /workspaces/clearpath_docker/clearpath_ws/install/setup.bash
+
+platform:
+  enable_ekf: false
+  extras:
+    urdf:
+      package: fear_jackal_sim
+      path: urdf/respeaker_mic.urdf.xacro
+
+sensors:
+  camera:
+    - model: intel_realsense
+      urdf_enabled: true
+      launch_enabled: true
+      parent: base_link
+      xyz: [0.24, 0.0, 0.18]
+      rpy: [0.0, 0.0, 0.0]
+      ros_parameters:
+        intel_realsense:
+          camera_name: camera_0
+          device_type: d435
+          enable_color: true
+          enable_depth: true
+          pointcloud.enable: true
+          align_depth.enable: true

@@ -1,0 +1,35 @@
+# Python / test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# ROS / colcon generated workspaces
+clearpath_ws/build/
+clearpath_ws/install/
+clearpath_ws/log/
+
+# Generated experiment outputs. The manual low-shot dataset is explicitly kept below.
+clearpath_ws/logs/*
+!clearpath_ws/logs/
+!clearpath_ws/logs/rodney_dataset/
+!clearpath_ws/logs/rodney_dataset/**
+
+# Trained model weights and derived archives should be published as releases or artifacts.
+*.pth
+*.pt
+*.ckpt
+*.onnx
+*.event*
+events.out.tfevents.*
+
+# Local/generated runtime artifacts
+sim_setup/**/__pycache__/
+*.bag
+*.db3
+.ros/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+!.vscode/*.json

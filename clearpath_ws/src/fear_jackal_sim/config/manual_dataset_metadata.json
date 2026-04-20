@@ -1,0 +1,30 @@
+{
+  "dataset_dir": "clearpath_ws/logs/rodney_dataset",
+  "source": "manual_jackal_low_shot",
+  "description": "Manually created 63-sample Jackal RGB-D three-frame behavior dataset for offline Sanchez SMANN fear training.",
+  "environment_name": "Jackal-v0",
+  "samples": 63,
+  "look_back": 3,
+  "channels": 4,
+  "image_height": 84,
+  "image_width": 84,
+  "reward_label_map": {
+    "unsafe": -1,
+    "safe": 0
+  },
+  "class_number_map": {
+    "unsafe": 0,
+    "safe": 1
+  },
+  "files": {
+    "observations": "clearpath_ws/logs/rodney_dataset/Jackal-v0_lookback_3observations.npy",
+    "class": "clearpath_ws/logs/rodney_dataset/Jackal-v0_lookback_3class.npy",
+    "class_number": "clearpath_ws/logs/rodney_dataset/Jackal-v0_lookback_3class_number.npy",
+    "reward": "clearpath_ws/logs/rodney_dataset/Jackal-v0_lookback_3reward.npy"
+  },
+  "notes": [
+    "This dataset was created for the Jackal sparse-reward fear experiment and is not part of the upstream Sanchez repository.",
+    "Unsafe windows represent behavior approaching grass or an obstacle and carry reward label -1.",
+    "Safe windows carry reward label 0."
+  ]
+}

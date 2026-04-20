@@ -1,0 +1,2 @@
+"""Fear Jackal simulation package."""
+

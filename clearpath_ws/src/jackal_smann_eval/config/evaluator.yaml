@@ -1,0 +1,48 @@
+jackal_smann_evaluator:
+  ros__parameters:
+    namespace: jackal_sidewalk
+    color_topic: /jackal_sidewalk/sensors/camera_0/color/image
+    depth_topic: /jackal_sidewalk/sensors/camera_0/depth/image
+    goal_coverage_topic: /jackal_sidewalk/goal/coverage
+    collision_topic: /jackal_sidewalk/collision
+    cmd_vel_topic: /jackal_sidewalk/cmd_vel
+    setup_path: /workspaces/clearpath_docker/sim_setup
+    world_name: mini_sidewalk
+    use_sim_time: true
+    spawn_x: -14.0
+    spawn_y: 0.0
+    spawn_z: 0.2
+    spawn_yaw: 0.0
+    max_episode_steps: 1000
+    goal_completion_threshold: 0.3
+    control_period_s: 0.1
+    reward_mode: combined
+    smann_checkpoint: /workspaces/clearpath_docker/clearpath_ws/logs/rodney_training/jackal_mann_independent/weights
+    fear_repo_path: /workspaces/Behavior-Intrinsic-Fear-main/CarRacingTesting
+    smann_image_size: 84
+    lookback: 3
+    smann_fear_threshold: 0.50
+    action_linear_speed: 0.35
+    action_turn_speed: 0.75
+    fear_linear_speed: 0.20
+    fear_turn_speed: 0.70
+    episode_log_dir: /workspaces/clearpath_docker/clearpath_ws/logs/jackal_smann_eval
+
+jackal_goal_monitor:
+  ros__parameters:
+    color_topic: /jackal_sidewalk/sensors/camera_0/color/image
+    depth_topic: /jackal_sidewalk/sensors/camera_0/depth/image
+    odom_topic: /jackal_sidewalk/platform/odom
+    goal_coverage_topic: /jackal_sidewalk/goal/coverage
+    collision_topic: /jackal_sidewalk/collision
+    goal_min_green: 160
+    goal_max_red: 140
+    goal_max_blue: 140
+    sidewalk_center_y: 0.0
+    sidewalk_half_width_m: 1.30
+    off_sidewalk_margin_m: 0.02
+    off_sidewalk_hold_s: 0.10
+    robot_half_width_m: 0.24
+    robot_half_length_m: 0.32
+    motion_state_timeout_s: 1.0
+    sim_time_jump_tolerance_s: 1.0
