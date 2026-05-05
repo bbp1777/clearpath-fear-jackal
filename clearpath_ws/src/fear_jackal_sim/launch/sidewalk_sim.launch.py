@@ -69,6 +69,16 @@ def generate_launch_description() -> LaunchDescription:
         default_value='false',
         description='Whether to bridge the logical microphone topics into ROS.',
     )
+    platform_cmd_vel_timeout_arg = DeclareLaunchArgument(
+        'platform_cmd_vel_timeout_s',
+        default_value='2.0',
+        description='Stamped command timeout applied to the diff-drive controller after startup.',
+    )
+    twist_mux_external_timeout_arg = DeclareLaunchArgument(
+        'twist_mux_external_timeout_s',
+        default_value='2.0',
+        description='Stamped command timeout applied to the twist_mux external input after startup.',
+    )
     x_arg = DeclareLaunchArgument('x', default_value='-14.0')
     y_arg = DeclareLaunchArgument('y', default_value='0.0')
     z_arg = DeclareLaunchArgument('z', default_value='0.20')
@@ -198,6 +208,27 @@ def generate_launch_description() -> LaunchDescription:
         ],
     )
 
+    timeout_overrides = Node(
+        package='fear_jackal_sim',
+        executable='command_timeout_overrides',
+        name='command_timeout_overrides',
+        output='screen',
+        parameters=[
+            {
+                'use_sim_time': ParameterValue(LaunchConfiguration('use_sim_time'), value_type=bool),
+                'namespace': LaunchConfiguration('namespace'),
+                'platform_cmd_vel_timeout_s': ParameterValue(
+                    LaunchConfiguration('platform_cmd_vel_timeout_s'),
+                    value_type=float,
+                ),
+                'twist_mux_external_timeout_s': ParameterValue(
+                    LaunchConfiguration('twist_mux_external_timeout_s'),
+                    value_type=float,
+                ),
+            }
+        ],
+    )
+
     return LaunchDescription(
         [
             namespace_arg,
@@ -206,6 +237,8 @@ def generate_launch_description() -> LaunchDescription:
             use_sim_time_arg,
             rviz_arg,
             enable_audio_arg,
+            platform_cmd_vel_timeout_arg,
+            twist_mux_external_timeout_arg,
             x_arg,
             y_arg,
             z_arg,
@@ -222,5 +255,6 @@ def generate_launch_description() -> LaunchDescription:
             *terminal_touch_bridges,
             audio_bridge,
             subscriber,
+            timeout_overrides,
         ]
     )

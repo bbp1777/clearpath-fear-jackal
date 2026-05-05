@@ -141,9 +141,9 @@ class FearTrainer(Node):
         self.declare_parameter('memory_similarity_image_size', 84)
         self.declare_parameter('memory_similarity_depth_clip_m', 5.0)
         # This points the live evaluator at the offline Jackal SMANN checkpoint.
-        self.declare_parameter('smann_checkpoint', '/workspaces/clearpath_docker/clearpath_ws/logs/rodney_training/jackal_mann/weights')
+        self.declare_parameter('smann_checkpoint', '/workspaces/clearpath_docker/clearpath_ws/logs/smann_training/smann_grid/final_selected/weights')
         # This points the adapter at the CarRacingTesting source tree used during training.
-        self.declare_parameter('fear_repo_path', '/workspaces/Behavior-Intrinsic-Fear-main/CarRacingTesting')
+        self.declare_parameter('fear_repo_path', '/workspaces/clearpath_docker/Behavior-Intrinsic-Fear-main/CarRacingTesting')
         self.declare_parameter('smann_image_size', 84)
         self.declare_parameter('smann_fear_threshold', 0.85)
         self.declare_parameter('fear_reactive_policy', True)

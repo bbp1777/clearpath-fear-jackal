@@ -19,8 +19,11 @@ RUN apt-get update && apt-get install -y \
 RUN python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed \
     'setuptools==68.2.2' \
     wheel \
+    'numpy==1.26.4' \
     torch \
-    tensorboard
+    tensorboard \
+    'matplotlib==3.8.4' \
+    'pandas==2.2.3'
 
 RUN rosdep init || true
 RUN rosdep update

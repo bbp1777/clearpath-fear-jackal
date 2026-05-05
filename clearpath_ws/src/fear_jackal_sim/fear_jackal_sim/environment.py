@@ -5,9 +5,11 @@ and reset gating for the trainer.
 from __future__ import annotations
 
 from collections.abc import Callable
+from math import hypot
 from typing import Optional
 
 from geometry_msgs.msg import TwistStamped
+from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.time import Time
 from sensor_msgs.msg import Image
@@ -33,6 +35,13 @@ class FearEnvironment:
         self._latest_audio = 0.0
         self._latest_goal_coverage = 0.0
         self._latest_collision = False
+        self._latest_odom_x = float(self.config.spawn_x)
+        self._latest_odom_y = float(self.config.spawn_y)
+        self._latest_goal_distance = self._compute_goal_distance(
+            self._latest_odom_x,
+            self._latest_odom_y,
+        )
+        self._closest_goal_distance = float(self._latest_goal_distance)
         self._collision_latched = False
         self._freeze_sensor_updates = False
         self._awaiting_post_reset_frames = False
@@ -53,6 +62,7 @@ class FearEnvironment:
         self._node.create_subscription(Image, self.config.depth_topic, self._on_depth, 10)
         self._node.create_subscription(Float32, self.config.goal_coverage_topic, self._on_goal_coverage, 10)
         self._node.create_subscription(Bool, self.config.collision_topic, self._on_collision, 10)
+        self._node.create_subscription(Odometry, self.config.odom_topic, self._on_odom, 10)
 
         if self.config.enable_audio and self.config.audio_topic:
             self._node.create_subscription(Float64, self.config.audio_topic, self._on_audio, 10)
@@ -63,14 +73,13 @@ class FearEnvironment:
         """
         self._reset_callback = callback
 
-    def _is_stale_sensor_message(self, msg: Image) -> bool:
+    def _is_stale_stamp(self, msg_stamp: Time) -> bool:
         """
-        Reject camera frames that still belong to the pre-reset world.
+        Reject messages that still belong to the pre-reset world.
         """
         if self._minimum_sensor_stamp is None:
             return False
 
-        msg_stamp = Time.from_msg(msg.header.stamp)
         if self._post_reset_requires_time_rewind:
             rewind_delta_ns = self._minimum_sensor_stamp.nanoseconds - msg_stamp.nanoseconds
             rewind_threshold_ns = int(self.config.sim_time_rewind_threshold_s * 1e9)
@@ -83,6 +92,12 @@ class FearEnvironment:
                 return False
 
         return msg_stamp <= self._minimum_sensor_stamp
+
+    def _is_stale_sensor_message(self, msg: Image) -> bool:
+        """
+        Reject camera frames that still belong to the pre-reset world.
+        """
+        return self._is_stale_stamp(Time.from_msg(msg.header.stamp))
 
     def _finalize_post_reset_readiness_if_ready(self) -> None:
         """
@@ -147,6 +162,29 @@ class FearEnvironment:
         if self._freeze_sensor_updates:
             return
         self._latest_audio = float(msg.data)
+
+    def _compute_goal_distance(self, x_position: float, y_position: float) -> float:
+        """
+        Return the planar Euclidean distance from the robot to the fixed goal marker.
+        """
+        return float(hypot(
+            x_position - float(self.config.goal_position_x),
+            y_position - float(self.config.goal_position_y),
+        ))
+
+    def _on_odom(self, msg: Odometry) -> None:
+        """
+        Cache the newest usable odometry reading and update paper-only goal-distance metrics.
+        """
+        if self._freeze_sensor_updates:
+            return
+        stamp = Time.from_msg(msg.header.stamp)
+        if self._is_stale_stamp(stamp):
+            return
+        self._latest_odom_x = float(msg.pose.pose.position.x)
+        self._latest_odom_y = float(msg.pose.pose.position.y)
+        self._latest_goal_distance = self._compute_goal_distance(self._latest_odom_x, self._latest_odom_y)
+        self._closest_goal_distance = min(self._closest_goal_distance, self._latest_goal_distance)
 
     def _on_goal_coverage(self, msg: Float32) -> None:
         """
@@ -260,6 +298,18 @@ class FearEnvironment:
             truncated=truncated,
         )
 
+    def current_goal_distance(self) -> float:
+        """
+        Return the most recent robot-to-goal distance in meters for logging only.
+        """
+        return float(self._latest_goal_distance)
+
+    def closest_goal_distance(self) -> float:
+        """
+        Return the closest robot-to-goal distance reached in the current episode.
+        """
+        return float(self._closest_goal_distance)
+
     def reset(self) -> ObservationBundle:
         """
         Reset episode-local state and trigger the registered simulator reset path.
@@ -276,6 +326,10 @@ class FearEnvironment:
         self._freeze_sensor_updates = False
         self._latest_goal_coverage = 0.0
         self._latest_audio = 0.0
+        self._latest_odom_x = float(self.config.spawn_x)
+        self._latest_odom_y = float(self.config.spawn_y)
+        self._latest_goal_distance = self._compute_goal_distance(self._latest_odom_x, self._latest_odom_y)
+        self._closest_goal_distance = float(self._latest_goal_distance)
         # This clears the cached action so resets start from a stopped robot command.
         self._last_action = AgentAction()
         self._awaiting_post_reset_frames = True

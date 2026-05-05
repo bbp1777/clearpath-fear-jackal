@@ -1,5 +1,5 @@
 {
-  "dataset_dir": "clearpath_ws/logs/rodney_dataset",
+  "dataset_dir": "clearpath_ws/logs/manual_dataset",
   "source": "manual_jackal_low_shot",
   "description": "Manually created 63-sample Jackal RGB-D three-frame behavior dataset for offline Sanchez SMANN fear training.",
   "environment_name": "Jackal-v0",
@@ -17,10 +17,10 @@
     "safe": 1
   },
   "files": {
-    "observations": "clearpath_ws/logs/rodney_dataset/Jackal-v0_lookback_3observations.npy",
-    "class": "clearpath_ws/logs/rodney_dataset/Jackal-v0_lookback_3class.npy",
-    "class_number": "clearpath_ws/logs/rodney_dataset/Jackal-v0_lookback_3class_number.npy",
-    "reward": "clearpath_ws/logs/rodney_dataset/Jackal-v0_lookback_3reward.npy"
+    "observations": "clearpath_ws/logs/manual_dataset/Jackal-v0_lookback_3observations.npy",
+    "class": "clearpath_ws/logs/manual_dataset/Jackal-v0_lookback_3class.npy",
+    "class_number": "clearpath_ws/logs/manual_dataset/Jackal-v0_lookback_3class_number.npy",
+    "reward": "clearpath_ws/logs/manual_dataset/Jackal-v0_lookback_3reward.npy"
   },
   "notes": [
     "This dataset was created for the Jackal sparse-reward fear experiment and is not part of the upstream Sanchez repository.",

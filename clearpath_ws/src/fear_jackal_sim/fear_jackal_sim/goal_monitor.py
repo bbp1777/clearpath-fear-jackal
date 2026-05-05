@@ -25,9 +25,9 @@ class FearGoalMonitor(Node):
         self.declare_parameter('odom_topic', '/jackal_sidewalk/platform/odom')
         self.declare_parameter('goal_coverage_topic', '/jackal_sidewalk/goal/coverage')
         self.declare_parameter('collision_topic', '/jackal_sidewalk/collision')
-        self.declare_parameter('goal_min_green', 200)
-        self.declare_parameter('goal_max_red', 90)
-        self.declare_parameter('goal_max_blue', 90)
+        self.declare_parameter('goal_min_green', 120)
+        self.declare_parameter('goal_max_red', 45)
+        self.declare_parameter('goal_max_blue', 45)
         self.declare_parameter('goal_min_green_minus_red', 100)
         self.declare_parameter('goal_min_green_minus_blue', 100)
         self.declare_parameter(
@@ -105,6 +105,8 @@ class FearGoalMonitor(Node):
         self._last_sim_stamp: Time | None = None
         self._off_sidewalk_since: Time | None = None
         self._collision_active = False
+        self._color_frame_count = 0
+        self._last_nonzero_goal_coverage = 0.0
 
         self._coverage_pub = self.create_publisher(Float32, goal_topic, 10)
         self._collision_pub = self.create_publisher(Bool, collision_topic, 10)
@@ -143,6 +145,7 @@ class FearGoalMonitor(Node):
         except ImageDecodingError as exc:
             self.get_logger().warning(str(exc))
             return
+        self._color_frame_count += 1
         coverage = compute_green_goal_coverage(
             image,
             min_green=self._goal_min_green,
@@ -151,7 +154,32 @@ class FearGoalMonitor(Node):
             min_green_minus_red=self._goal_min_green_minus_red,
             min_green_minus_blue=self._goal_min_green_minus_blue,
         )
+        if coverage > 0.0:
+            self._last_nonzero_goal_coverage = float(coverage)
+        elif self._color_frame_count % 60 == 0:
+            self._log_zero_coverage_debug(image)
         self._coverage_pub.publish(Float32(data=float(coverage)))
+
+    def _log_zero_coverage_debug(self, image) -> None:
+        red = image[..., 0].astype('int16')
+        green = image[..., 1].astype('int16')
+        blue = image[..., 2].astype('int16')
+        relaxed_green = (
+            (green >= 80)
+            & ((green - red) >= 50)
+            & ((green - blue) >= 50)
+        )
+        relaxed_fraction = float(relaxed_green.mean())
+        self.get_logger().info(
+            'Goal coverage remains zero '
+            f'frame={self._color_frame_count} '
+            f'max_rgb=({int(red.max())},{int(green.max())},{int(blue.max())}) '
+            f'relaxed_green_fraction={relaxed_fraction:.4f} '
+            f'thresholds=min_green:{self._goal_min_green},max_red:{self._goal_max_red},'
+            f'max_blue:{self._goal_max_blue},green-red:{self._goal_min_green_minus_red},'
+            f'green-blue:{self._goal_min_green_minus_blue} '
+            f'last_nonzero_coverage={self._last_nonzero_goal_coverage:.4f}'
+        )
 
     def _on_odom(self, msg: Odometry) -> None:
         stamp = Time.from_msg(msg.header.stamp)

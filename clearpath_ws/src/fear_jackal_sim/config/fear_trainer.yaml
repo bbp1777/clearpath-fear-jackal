@@ -8,55 +8,49 @@ fear_trainer:
     goal_coverage_topic: /jackal_sidewalk/goal/coverage
     collision_topic: /jackal_sidewalk/collision
     cmd_vel_topic: /jackal_sidewalk/cmd_vel
+    odom_topic: /jackal_sidewalk/platform/odom
     world_name: mini_sidewalk
     model_name: jackal_sidewalk/robot
     spawn_x: -14.0
     spawn_y: 0.0
     spawn_z: 0.2
     spawn_yaw: 0.0
-    max_episode_steps: 400
-    goal_completion_threshold: 0.3
+    goal_position_x: 12.5
+    goal_position_y: 0.0
+    max_episode_steps: 750
+    goal_completion_threshold: 0.5
     reset_timeout_s: 5.0
     reset_settle_s: 1.0
     lookback: 3
-    # Main PPO + fear-reward training mode. Override reward_mode for ablations.
-    reward_mode: combined
+    # Base PPO defaults to sparse goal reward only. Combined SMANN runs override reward_mode.
+    reward_mode: external_only
     external_reward_scale: 1.0
     intrinsic_reward_scale: 1.0
     replay_buffer_capacity: 5000
-    policy_hidden_dim: 64
     action_linear_speed: 0.4
     action_angular_speed: 0.75
-    # PPO should choose the action during the main Sanchez-style PPO+FIR run.
+    # PPO now consumes single-frame RGB-D input through a Rodney-style CNN actor-critic.
     use_policy_network: true
     policy_learning_rate: 0.0003
     value_learning_rate: 0.001
-    policy_temperature: 1.35
-    exploration_epsilon: 0.1
     ppo_update_epochs: 4
     ppo_clip_epsilon: 0.2
     discount_factor: 0.99
     entropy_coefficient: 0.03
     critic_loss_coefficient: 0.5
     gradient_clip_norm: 1.0
-    # External task reward is sparse: only RGB goal coverage crossing the
-    # completion threshold pays out. Collision is terminal, not a reward term.
-    goal_progress_scale: 0.0
-    goal_alignment_scale: 0.0
-    step_penalty: 0.0
-    collision_penalty: 0.0
     goal_reward_bonus: 1.0
-    # This makes the live Jackal stack use the trained SMANN checkpoint by default.
-    fear_model_mode: smann
+    # Base PPO defaults to no intrinsic fear; SMANN runs override this at launch.
+    fear_model_mode: none
     manual_memory_dataset_dir: ''
     manual_memory_bank_path: ''
     memory_similarity_image_size: 84
     memory_similarity_depth_clip_m: 5.0
     # This points live evaluation at the Jackal checkpoint trained from the offline RGB-D dataset.
-    smann_checkpoint: /workspaces/clearpath_docker/clearpath_ws/logs/rodney_training/jackal_mann_independent/weights
-    smann_dataset_dir: /workspaces/clearpath_docker/clearpath_ws/logs/rodney_dataset
+    smann_checkpoint: /workspaces/clearpath_docker/clearpath_ws/logs/smann_training/smann_grid/final_selected/weights
+    smann_dataset_dir: /workspaces/clearpath_docker/clearpath_ws/logs/manual_dataset
     # This points the adapter at the CarRacingTesting code path used during offline training.
-    fear_repo_path: /workspaces/Behavior-Intrinsic-Fear-main/CarRacingTesting
+    fear_repo_path: /workspaces/clearpath_docker/Behavior-Intrinsic-Fear-main/CarRacingTesting
     sanchez_upstream_repo: https://github.com/ras8047/Behavior-Intrinsic-Fear
     sanchez_upstream_commit: ''
     smann_image_size: 84
@@ -65,8 +59,8 @@ fear_trainer:
     fear_reactive_policy: false
     fear_reactive_linear_speed: 0.12
     fear_reactive_turn_speed: 0.9
-    # This shorter control period keeps stamped velocity commands fresh for ros2_control.
-    control_period_s: 0.1
+    # Default training horizon: 750 decisions at 0.5 s each.
+    control_period_s: 0.5
     # This keeps the PPO cadence defined even though frozen evaluation skips the update step.
     train_every_n_steps: 64
     vicarious_update_every_n_episodes: 1
@@ -75,9 +69,9 @@ fear_trainer:
     enable_online_smann_updates: false
     # Training mode by default; pass evaluation_only:=true for frozen/evaluator runs.
     evaluation_only: false
-    run_name: ppo_fear_combined
+    run_name: ppo_rgbdcnn_base
     archive_episodes: true
     episode_archive_dir: /workspaces/clearpath_docker/clearpath_ws/logs/episode_archives
-
-
-
+    max_episodes: 50
+    random_seed: 0
+    run_artifact_dir: /workspaces/clearpath_docker/clearpath_ws/logs/paper_runs_rgbdcnn

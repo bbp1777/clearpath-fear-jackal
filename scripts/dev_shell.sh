@@ -2,7 +2,6 @@
 set -euo pipefail
 
 IMAGE_NAME="${IMAGE_NAME:-clearpath-jazzy-sim}"
-FEAR_REPO_HOST_PATH="${FEAR_REPO_HOST_PATH:-/home/sting/Behavior-Intrinsic-Fear-main}"
 FORCE_BUILD=0
 
 for arg in "$@"; do
@@ -60,12 +59,10 @@ DOCKER_RUN_ARGS=(
   -w /workspaces/clearpath_docker
 )
 
-if [ -d "${FEAR_REPO_HOST_PATH}" ]; then
-  echo "Mounting Behavior-Intrinsic-Fear repo from ${FEAR_REPO_HOST_PATH}."
-  DOCKER_RUN_ARGS+=( -v "${FEAR_REPO_HOST_PATH}":/workspaces/Behavior-Intrinsic-Fear-main )
-else
-  echo "Behavior-Intrinsic-Fear repo was not found at ${FEAR_REPO_HOST_PATH}." >&2
-  echo "SMANN loading will stay disabled until that repo is available or FEAR_REPO_HOST_PATH is set." >&2
+if [ ! -d "$(pwd)/Behavior-Intrinsic-Fear-main/CarRacingTesting" ]; then
+  echo "Vendored Behavior-Intrinsic-Fear source was not found under $(pwd)/Behavior-Intrinsic-Fear-main." >&2
+  echo "Restore the vendored upstream snapshot before launching the development shell." >&2
+  exit 1
 fi
 
 "${DOCKER_BIN}" run "${DOCKER_RUN_ARGS[@]}" "${IMAGE_NAME}" bash

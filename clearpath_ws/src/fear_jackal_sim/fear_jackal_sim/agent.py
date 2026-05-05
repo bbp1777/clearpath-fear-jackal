@@ -5,8 +5,11 @@ keeping the offline fear hooks close to the rest of the learning loop.
 """
 from __future__ import annotations
 
+import json
+import os
+import random
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -19,6 +22,7 @@ from fear_jackal_sim.vision_utils import (
     ImageDecodingError,
     compute_green_goal_offset,
     depth_image_to_numpy,
+    format_rgbd_timestep,
     rgb_image_to_numpy,
     summarize_depth_sectors,
 )
@@ -38,44 +42,86 @@ except Exception:
     clip_grad_norm_ = None
 
 
-# These tiny networks are the online PPO policy/value backbone for the Jackal.
-# They are not part of Rodney Sanchez's fear model; that logic lives in SMANNAdapter
-# and SequenceMemoryRewardModel farther down in the agent.
+POLICY_IMAGE_SIZE = 84
+POLICY_INPUT_CHANNELS = 4
+POLICY_FEATURE_DIM = 3136
+TORCH_DEVICE = torch.device('cuda' if torch is not None and torch.cuda.is_available() else 'cpu') if torch is not None else None
+
+
 if nn is not None:
+    def layer_init(layer: nn.Module, std: float = float(np.sqrt(2.0)), bias_const: float = 0.0) -> nn.Module:
+        """Match Rodney Sanchez's orthogonal-layer initialization style."""
+        nn.init.orthogonal_(layer.weight, std)
+        if layer.bias is not None:
+            nn.init.constant_(layer.bias, bias_const)
+        return layer
+
+
     class ActorNetwork(nn.Module):
-        """Small MLP actor head that maps Jackal features to action logits."""
-        def __init__(self, input_dim: int, hidden_dim: int, action_dim: int) -> None:
-            """Build the policy network used by PPO."""
+        """Rodney-style CNN actor adapted to single-frame Jackal RGB-D observations."""
+        def __init__(self, action_dim: int) -> None:
+            """Build the actor network used by PPO."""
             super().__init__()
             self.net = nn.Sequential(
-                nn.Linear(input_dim, hidden_dim),
+                layer_init(nn.Conv2d(POLICY_INPUT_CHANNELS, 32, 8, stride=4)),
                 nn.ReLU(),
-                nn.Linear(hidden_dim, hidden_dim),
+                layer_init(nn.Conv2d(32, 64, 4, stride=2)),
                 nn.ReLU(),
-                nn.Linear(hidden_dim, action_dim),
+                layer_init(nn.Conv2d(64, 64, 3, stride=1)),
+                nn.ReLU(),
+                nn.Flatten(),
+                layer_init(nn.Linear(POLICY_FEATURE_DIM, 512)),
+                nn.ReLU(),
+                layer_init(nn.Linear(512, 64)),
+                nn.Tanh(),
+                layer_init(nn.Linear(64, 64)),
+                nn.Tanh(),
+                layer_init(nn.Linear(64, action_dim), std=0.01),
+                nn.Softmax(dim=-1),
             )
 
         def forward(self, x):
-            """Return action logits for the current feature tensor."""
-            return self.net(x)
+            """Return action probabilities for the current RGB-D tensor or batch."""
+            squeeze_output = x.dim() == 3
+            if squeeze_output:
+                x = x.unsqueeze(0)
+            probabilities = self.net(x / 255.0)
+            if squeeze_output:
+                return probabilities.squeeze(0)
+            return probabilities
 
 
     class CriticNetwork(nn.Module):
-        """Small MLP critic head that predicts state value from Jackal features."""
-        def __init__(self, input_dim: int, hidden_dim: int) -> None:
+        """Rodney-style CNN critic adapted to single-frame Jackal RGB-D observations."""
+        def __init__(self) -> None:
             """Build the value network used by PPO."""
             super().__init__()
-            self.net = nn.Sequential(
-                nn.Linear(input_dim, hidden_dim),
+            self.conv = nn.Sequential(
+                layer_init(nn.Conv2d(POLICY_INPUT_CHANNELS, 32, 8, stride=4)),
                 nn.ReLU(),
-                nn.Linear(hidden_dim, hidden_dim),
+                layer_init(nn.Conv2d(32, 64, 4, stride=2)),
                 nn.ReLU(),
-                nn.Linear(hidden_dim, 1),
+                layer_init(nn.Conv2d(64, 64, 3, stride=1)),
+                nn.ReLU(),
+                nn.Flatten(),
+                layer_init(nn.Linear(POLICY_FEATURE_DIM, 512)),
             )
+            self.fc1 = layer_init(nn.Linear(512, 64))
+            self.fc2 = layer_init(nn.Linear(64, 64))
+            self.value_head = layer_init(nn.Linear(64, 1), std=1.0)
 
         def forward(self, x):
-            """Return the value estimate for the current feature tensor."""
-            return self.net(x)
+            """Return the value estimate for the current RGB-D tensor or batch."""
+            squeeze_output = x.dim() == 3
+            if squeeze_output:
+                x = x.unsqueeze(0)
+            features = self.conv(x / 255.0)
+            features = torch.tanh(self.fc1(features))
+            features = torch.tanh(self.fc2(features))
+            values = self.value_head(features)
+            if squeeze_output:
+                return values.squeeze(0)
+            return values
 else:
     ActorNetwork = None
     CriticNetwork = None
@@ -101,7 +147,7 @@ class PendingPolicyStep:
 
 @dataclass
 class RolloutBuffer:
-    """PPO rollout storage for Jackal feature states."""
+    """PPO rollout storage for Jackal RGB-D policy states."""
 
     states: list[Any] = field(default_factory=list)
     actions: list[Any] = field(default_factory=list)
@@ -189,13 +235,13 @@ class FearAgent:
         self.last_policy_clip_fraction = 0.0
         self.policy_update_count = 0
         self._pending_policy_step: PendingPolicyStep | None = None
-        self._reward_goal_offset = 0.0
 
     def init(self) -> None:
         """
         Initialize the policy networks and load whichever fear backend is currently
         configured.
         """
+        self._set_random_seed()
         self._load_networks()
         self._load_replay_buffer()
 
@@ -223,31 +269,23 @@ class FearAgent:
         """
         Load or initialize the resources needed by this agent subsystem.
         """
-        # If we keep PPO enabled, actor and critic are required because PPO needs both
-        # a policy distribution and a value baseline. Removing them would disable PPO.
         if self.config.use_policy_network and ActorNetwork is not None and CriticNetwork is not None and optim is not None:
-            input_dim = self._policy_feature_dim()
             action_dim = len(self._action_library())
-            self.actor = ActorNetwork(input_dim, self.config.policy_hidden_dim, action_dim)
-            self.critic = CriticNetwork(input_dim, self.config.policy_hidden_dim)
-            self.policy_old_actor = ActorNetwork(input_dim, self.config.policy_hidden_dim, action_dim)
-            self.policy_old_critic = CriticNetwork(input_dim, self.config.policy_hidden_dim)
+            self.actor = ActorNetwork(action_dim).to(TORCH_DEVICE)
+            self.critic = CriticNetwork().to(TORCH_DEVICE)
+            self.policy_old_actor = ActorNetwork(action_dim).to(TORCH_DEVICE)
+            self.policy_old_critic = CriticNetwork().to(TORCH_DEVICE)
             self.policy_optimizer = optim.Adam(
                 [
                     {'params': self.actor.parameters(), 'lr': self.config.policy_learning_rate},
                     {'params': self.critic.parameters(), 'lr': self.config.value_learning_rate},
                 ]
             )
-            final_linear = self.actor.net[-1]
-            with torch.no_grad():
-                final_linear.bias.zero_()
-                if final_linear.bias.numel() >= 2:
-                    final_linear.bias[1] = 1.2
             self.policy_old_actor.load_state_dict(self.actor.state_dict())
             self.policy_old_critic.load_state_dict(self.critic.state_dict())
             self.logger.info(
                 'Online PPO policy was initialized using the Sanchez-style rollout update structure '
-                'with a feature-based Jackal state encoder.'
+                'with a Rodney-style single-frame RGB-D CNN encoder.'
             )
         elif self.config.use_policy_network:
             self.logger.warning('PyTorch is unavailable; using heuristic actions instead of a learned policy.')
@@ -259,6 +297,70 @@ class FearAgent:
         self.logger.info(
             f'Replay buffer initialized with capacity {self.config.replay_buffer_capacity} transitions.'
         )
+
+    def _set_random_seed(self) -> None:
+        """
+        Seed all local stochastic sources used by PPO action sampling and network init.
+        """
+        seed = int(getattr(self.config, 'random_seed', 0))
+        random.seed(seed)
+        np.random.seed(seed)
+        if torch is not None:
+            torch.manual_seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(seed)
+        self.logger.info(f'Random seed set to {seed} for PPO policy initialization and sampling.')
+
+    def save_policy_checkpoint(self, output_dir: str, metadata: dict[str, object] | None = None) -> dict[str, object]:
+        """
+        Export the current PPO actor/critic state for paper-run reproducibility.
+        """
+        os.makedirs(output_dir, exist_ok=True)
+        summary: dict[str, object] = {
+            'saved': False,
+            'checkpoint_path': '',
+            'metadata_path': '',
+            'reason': '',
+        }
+        if torch is None:
+            summary['reason'] = 'torch_unavailable'
+            return summary
+        if self.actor is None or self.critic is None:
+            summary['reason'] = 'policy_network_disabled'
+            return summary
+
+        checkpoint_path = os.path.join(output_dir, 'ppo_checkpoint.pt')
+        metadata_path = os.path.join(output_dir, 'ppo_checkpoint_metadata.json')
+        payload = {
+            'actor_state_dict': self.actor.state_dict(),
+            'critic_state_dict': self.critic.state_dict(),
+            'policy_old_actor_state_dict': self.policy_old_actor.state_dict() if self.policy_old_actor is not None else None,
+            'policy_old_critic_state_dict': self.policy_old_critic.state_dict() if self.policy_old_critic is not None else None,
+            'optimizer_state_dict': self.policy_optimizer.state_dict() if self.policy_optimizer is not None else None,
+            'policy_update_count': int(self.policy_update_count),
+            'last_actor_loss': float(self.last_actor_loss),
+            'last_critic_loss': float(self.last_critic_loss),
+            'last_policy_entropy': float(self.last_policy_entropy),
+            'last_policy_clip_fraction': float(self.last_policy_clip_fraction),
+            'config': asdict(self.config),
+            'metadata': metadata or {},
+        }
+        torch.save(payload, checkpoint_path)
+        with open(metadata_path, 'w', encoding='ascii') as handle:
+            json.dump(
+                {
+                    'checkpoint_path': checkpoint_path,
+                    'policy_update_count': int(self.policy_update_count),
+                    'random_seed': int(self.config.random_seed),
+                    'metadata': metadata or {},
+                },
+                handle,
+                indent=2,
+            )
+        summary['saved'] = True
+        summary['checkpoint_path'] = checkpoint_path
+        summary['metadata_path'] = metadata_path
+        return summary
 
     def reward(self, observation: ObservationBundle) -> float:
         """
@@ -313,7 +415,6 @@ class FearAgent:
         self.last_fear_override = False
         self.last_policy_action_name = 'none'
         self._pending_policy_step = None
-        self._reward_goal_offset = 0.0
         return self.environment.reset()
 
     def act(self, state: ObservationBundle) -> AgentAction:
@@ -471,24 +572,14 @@ class FearAgent:
         """
         Sample the value needed by the surrounding PPO logic.
         """
-        state_tensor = torch.tensor(self._policy_features(state), dtype=torch.float32)
+        state_tensor = self._policy_observation(state)
 
         with torch.no_grad():
-            logits = self.policy_old_actor(state_tensor)
-            # Temperature and epsilon follow the same intent as before, but now the
-            # sampled action is stored in a Sanchez-style PPO rollout buffer.
-            temperature = max(float(self.config.policy_temperature), 1.0e-3)
-            logits = logits / temperature
-            dist = Categorical(logits=logits)
-            if float(np.random.rand()) < float(self.config.exploration_epsilon):
-                action_tensor = torch.tensor(
-                    int(np.random.randint(len(self._action_library()))),
-                    dtype=torch.int64,
-                )
-            else:
-                action_tensor = dist.sample()
+            action_probs = self.policy_old_actor(state_tensor.unsqueeze(0)).squeeze(0)
+            dist = Categorical(probs=action_probs)
+            action_tensor = dist.sample()
             log_prob = dist.log_prob(action_tensor)
-            value = self.policy_old_critic(state_tensor).squeeze(-1)
+            value = self.policy_old_critic(state_tensor.unsqueeze(0)).squeeze(-1).squeeze(0)
 
         action_index = int(action_tensor.item())
         action_name, action = self._action_library()[action_index]
@@ -562,14 +653,14 @@ class FearAgent:
                 discounted_reward = float(reward) + (self.config.discount_factor * discounted_reward)
                 rewards.insert(0, discounted_reward)
 
-            returns = torch.tensor(rewards, dtype=torch.float32)
+            returns = torch.tensor(rewards, dtype=torch.float32, device=TORCH_DEVICE)
             if returns.numel() > 1:
                 returns = (returns - returns.mean()) / (returns.std(unbiased=False) + 1.0e-7)
 
-            old_states = torch.stack(self.rollout_buffer.states, dim=0).detach()
-            old_actions = torch.stack(self.rollout_buffer.actions, dim=0).long().view(-1).detach()
-            old_logprobs = torch.stack(self.rollout_buffer.logprobs, dim=0).view(-1).detach()
-            old_state_values = torch.stack(self.rollout_buffer.state_values, dim=0).view(-1).detach()
+            old_states = torch.stack(self.rollout_buffer.states, dim=0).detach().to(TORCH_DEVICE)
+            old_actions = torch.stack(self.rollout_buffer.actions, dim=0).long().view(-1).detach().to(TORCH_DEVICE)
+            old_logprobs = torch.stack(self.rollout_buffer.logprobs, dim=0).view(-1).detach().to(TORCH_DEVICE)
+            old_state_values = torch.stack(self.rollout_buffer.state_values, dim=0).view(-1).detach().to(TORCH_DEVICE)
             advantages = returns.detach() - old_state_values
             if advantages.numel() > 1:
                 advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1.0e-7)
@@ -580,8 +671,8 @@ class FearAgent:
             ratios_mean = 1.0
             clip_fraction_value = 0.0
             for _ in range(max(int(self.config.ppo_update_epochs), 1)):
-                logits = self.actor(old_states)
-                dist = Categorical(logits=logits)
+                action_probs = self.actor(old_states)
+                dist = Categorical(probs=action_probs)
                 logprobs = dist.log_prob(old_actions)
                 entropy = dist.entropy().mean()
                 state_values = self.critic(old_states).squeeze(-1)
@@ -668,36 +759,24 @@ class FearAgent:
             ('turn_right', AgentAction(linear_x=linear * 0.25, angular_z=-angular)),
         ]
 
-    def _policy_feature_dim(self) -> int:
+    def _policy_observation(self, state: ObservationBundle):
         """
-        Policy helper used while building PPO inputs or outputs.
+        Convert the current RGB-D observation into the single-frame CNN tensor used by PPO.
         """
-        return 9
-
-    def _policy_features(self, state: ObservationBundle) -> np.ndarray:
-        """
-        Compress the full observation into the low-dimensional feature vector consumed by
-        the PPO networks.
-        """
-        analysis = self._analyze_observation(state)
-        step_fraction = 0.0
-        if self.environment.config.max_episode_steps > 0:
-            step_fraction = min(float(state.step_index) / float(self.environment.config.max_episode_steps), 1.0)
-        goal_visible = 1.0 if state.goal_coverage > 0.005 else 0.0
-        return np.asarray(
-            [
-                float(state.goal_coverage),
-                goal_visible,
-                float(analysis['goal_offset']),
-                float(analysis['left_depth']),
-                float(analysis['center_depth']),
-                float(analysis['right_depth']),
-                float(analysis['minimum_depth']),
-                float(state.collision),
-                float(step_fraction),
-            ],
-            dtype=np.float32,
-        )
+        if torch is None:
+            raise RuntimeError('PyTorch is unavailable; policy observations cannot be built.')
+        if state.color_msg is None or state.depth_msg is None:
+            return torch.zeros((POLICY_INPUT_CHANNELS, POLICY_IMAGE_SIZE, POLICY_IMAGE_SIZE), dtype=torch.float32, device=TORCH_DEVICE)
+        try:
+            rgbd_timestep = format_rgbd_timestep(
+                state.color_msg,
+                state.depth_msg,
+                height=POLICY_IMAGE_SIZE,
+                width=POLICY_IMAGE_SIZE,
+            )
+        except ImageDecodingError:
+            rgbd_timestep = np.zeros((POLICY_INPUT_CHANNELS, POLICY_IMAGE_SIZE, POLICY_IMAGE_SIZE), dtype=np.uint8)
+        return torch.tensor(rgbd_timestep, dtype=torch.float32, device=TORCH_DEVICE)
 
     def _analyze_observation(self, observation: ObservationBundle) -> dict[str, float]:
         """

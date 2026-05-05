@@ -129,9 +129,9 @@ def merge_rgb_depth_dataset(
 
 def _green_goal_mask(
     rgb_image: np.ndarray,
-    min_green: int = 200,
-    max_red: int = 90,
-    max_blue: int = 90,
+    min_green: int = 120,
+    max_red: int = 45,
+    max_blue: int = 45,
     min_green_minus_red: int = 100,
     min_green_minus_blue: int = 100,
 ) -> np.ndarray:
@@ -149,9 +149,9 @@ def _green_goal_mask(
 
 def compute_green_goal_coverage(
     rgb_image: np.ndarray,
-    min_green: int = 200,
-    max_red: int = 90,
-    max_blue: int = 90,
+    min_green: int = 120,
+    max_red: int = 45,
+    max_blue: int = 45,
     min_green_minus_red: int = 100,
     min_green_minus_blue: int = 100,
 ) -> float:
@@ -171,9 +171,9 @@ def compute_green_goal_coverage(
 
 def compute_green_goal_offset(
     rgb_image: np.ndarray,
-    min_green: int = 200,
-    max_red: int = 90,
-    max_blue: int = 90,
+    min_green: int = 120,
+    max_red: int = 45,
+    max_blue: int = 45,
     min_green_minus_red: int = 100,
     min_green_minus_blue: int = 100,
 ) -> float:

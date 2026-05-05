@@ -8,8 +8,9 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, RegisterEventHandler, Shutdown
 from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
@@ -82,8 +83,8 @@ def generate_launch_description() -> LaunchDescription:
     )
     fear_model_mode_arg = DeclareLaunchArgument(
         'fear_model_mode',
-        default_value='smann',
-        description='Select smann for the frozen Sanchez sequence model or memory_similarity for the older manual-bank path.',
+        default_value='none',
+        description='Select none for base PPO, smann for Sanchez-style intrinsic fear, or memory_similarity for the older manual-bank path.',
     )
     manual_memory_dataset_dir_arg = DeclareLaunchArgument(
         'manual_memory_dataset_dir',
@@ -97,24 +98,24 @@ def generate_launch_description() -> LaunchDescription:
     )
     smann_checkpoint_arg = DeclareLaunchArgument(
         'smann_checkpoint',
-        default_value='/workspaces/clearpath_docker/clearpath_ws/logs/rodney_training/jackal_mann_independent/weights',
+        default_value='/workspaces/clearpath_docker/clearpath_ws/logs/smann_training/smann_grid/final_selected/weights',
         description='Checkpoint directory containing the Jackal SMANN weights saved from offline training.',
     )
     smann_dataset_dir_arg = DeclareLaunchArgument(
         'smann_dataset_dir',
-        default_value='/workspaces/clearpath_docker/clearpath_ws/logs/rodney_dataset',
+        default_value='/workspaces/clearpath_docker/clearpath_ws/logs/manual_dataset',
         description='Manual low-shot Jackal SMANN dataset used for run provenance logging.',
     )
     # This argument makes reward-mode sweeps easy to run from the launch command line.
     reward_mode_arg = DeclareLaunchArgument(
         'reward_mode',
-        default_value='combined',
-        description='Choose external_only, intrinsic_only, or combined for training and ablation runs.',
+        default_value='external_only',
+        description='Choose external_only for base PPO or combined to add an intrinsic fear penalty.',
     )
     # This argument makes the SMANN code source explicit so CarRacingTesting is used live.
     fear_repo_path_arg = DeclareLaunchArgument(
         'fear_repo_path',
-        default_value='/workspaces/Behavior-Intrinsic-Fear-main/CarRacingTesting',
+        default_value='/workspaces/clearpath_docker/Behavior-Intrinsic-Fear-main/CarRacingTesting',
         description='Behavior-Intrinsic-Fear source directory used for live SMANN imports.',
     )
     sanchez_upstream_repo_arg = DeclareLaunchArgument(
@@ -132,6 +133,16 @@ def generate_launch_description() -> LaunchDescription:
         'smann_fear_threshold',
         default_value='0.50',
         description='Fear score cutoff used for SMANN reward gating; tune from validation distributions.',
+    )
+    max_episode_steps_arg = DeclareLaunchArgument(
+        'max_episode_steps',
+        default_value='750',
+        description='Maximum control steps per episode for the default training runs.',
+    )
+    goal_completion_threshold_arg = DeclareLaunchArgument(
+        'goal_completion_threshold',
+        default_value='0.50',
+        description='RGB goal-block coverage threshold required for sparse success reward.',
     )
     # This argument switches between training and frozen evaluation runs.
     evaluation_only_arg = DeclareLaunchArgument(
@@ -153,13 +164,33 @@ def generate_launch_description() -> LaunchDescription:
     # This argument makes it easy to separate tensorboard runs for different thresholds.
     run_name_arg = DeclareLaunchArgument(
         'run_name',
-        default_value='ppo_fear_combined',
+        default_value='ppo_rgbdcnn_base',
         description='Run name used for TensorBoard and experiment bookkeeping.',
+    )
+    max_episodes_arg = DeclareLaunchArgument(
+        'max_episodes',
+        default_value='50',
+        description='Stop the trainer cleanly after this many completed episodes. Set 0 to run until interrupted.',
+    )
+    random_seed_arg = DeclareLaunchArgument(
+        'random_seed',
+        default_value='0',
+        description='Random seed used for PPO initialization and stochastic action sampling.',
+    )
+    run_artifact_dir_arg = DeclareLaunchArgument(
+        'run_artifact_dir',
+        default_value='/workspaces/clearpath_docker/clearpath_ws/logs/paper_runs_rgbdcnn',
+        description='Root directory for per-run summaries, PPO checkpoints, and other generated outputs.',
     )
     fear_reactive_policy_arg = DeclareLaunchArgument(
         'fear_reactive_policy',
         default_value='false',
         description='Enable the reactive fear-only ablation action override. Keep false for PPO plus fear reward runs.',
+    )
+    control_period_s_arg = DeclareLaunchArgument(
+        'control_period_s',
+        default_value='0.5',
+        description='Policy control period in seconds. The final paper setup uses 0.5 s.',
     )
     episode_archive_dir_arg = DeclareLaunchArgument(
         'episode_archive_dir',
@@ -277,6 +308,7 @@ def generate_launch_description() -> LaunchDescription:
                 'enable_audio': ParameterValue(LaunchConfiguration('enable_audio'), value_type=bool),
                 'audio_topic': '',
                 'cmd_vel_topic': LaunchConfiguration('cmd_vel_topic'),
+                'odom_topic': LaunchConfiguration('odom_topic'),
                 'goal_coverage_topic': LaunchConfiguration('goal_coverage_topic'),
                 'collision_topic': LaunchConfiguration('collision_topic'),
                 'world_name': 'mini_sidewalk',
@@ -288,6 +320,8 @@ def generate_launch_description() -> LaunchDescription:
                 'spawn_y': ParameterValue(LaunchConfiguration('y'), value_type=float),
                 'spawn_z': ParameterValue(LaunchConfiguration('z'), value_type=float),
                 'spawn_yaw': ParameterValue(LaunchConfiguration('yaw'), value_type=float),
+                'max_episode_steps': ParameterValue(LaunchConfiguration('max_episode_steps'), value_type=int),
+                'goal_completion_threshold': ParameterValue(LaunchConfiguration('goal_completion_threshold'), value_type=float),
                 'fear_model_mode': LaunchConfiguration('fear_model_mode'),
                 'manual_memory_dataset_dir': LaunchConfiguration('manual_memory_dataset_dir'),
                 'manual_memory_bank_path': LaunchConfiguration('manual_memory_bank_path'),
@@ -302,7 +336,11 @@ def generate_launch_description() -> LaunchDescription:
                 'enable_online_smann_updates': ParameterValue(LaunchConfiguration('enable_online_smann_updates'), value_type=bool),
                 'use_policy_network': ParameterValue(LaunchConfiguration('use_policy_network'), value_type=bool),
                 'run_name': LaunchConfiguration('run_name'),
+                'max_episodes': ParameterValue(LaunchConfiguration('max_episodes'), value_type=int),
+                'random_seed': ParameterValue(LaunchConfiguration('random_seed'), value_type=int),
+                'run_artifact_dir': LaunchConfiguration('run_artifact_dir'),
                 'fear_reactive_policy': ParameterValue(LaunchConfiguration('fear_reactive_policy'), value_type=bool),
+                'control_period_s': ParameterValue(LaunchConfiguration('control_period_s'), value_type=float),
                 'episode_archive_dir': LaunchConfiguration('episode_archive_dir'),
             },
         ],
@@ -328,11 +366,17 @@ def generate_launch_description() -> LaunchDescription:
             sanchez_upstream_repo_arg,
             sanchez_upstream_commit_arg,
             smann_fear_threshold_arg,
+            max_episode_steps_arg,
+            goal_completion_threshold_arg,
             evaluation_only_arg,
             enable_online_smann_updates_arg,
             use_policy_network_arg,
             run_name_arg,
+            max_episodes_arg,
+            random_seed_arg,
+            run_artifact_dir_arg,
             fear_reactive_policy_arg,
+            control_period_s_arg,
             episode_archive_dir_arg,
             x_arg,
             y_arg,
@@ -348,5 +392,11 @@ def generate_launch_description() -> LaunchDescription:
             sim,
             goal_monitor,
             trainer,
+            RegisterEventHandler(
+                OnProcessExit(
+                    target_action=trainer,
+                    on_exit=[Shutdown(reason='fear_trainer completed or exited')],
+                )
+            ),
         ]
     )

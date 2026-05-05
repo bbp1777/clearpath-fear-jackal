@@ -88,7 +88,7 @@ class AgentConfig:
     # This stores the checkpoint directory for the offline-trained SMANN weights.
     smann_checkpoint: str = ''
     # This stores the Behavior-Intrinsic-Fear source directory.
-    fear_repo_path: str = '/workspaces/Behavior-Intrinsic-Fear-main/CarRacingTesting'
+    fear_repo_path: str = '/workspaces/clearpath_docker/Behavior-Intrinsic-Fear-main/CarRacingTesting'
     # This stores the square image size used by the SMANN model.
     smann_image_size: int = 84
     # This stores the SMANN lookback value.
