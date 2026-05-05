@@ -24,7 +24,7 @@ jackal_sidewalk:
       open_loop: False
       enable_odom_tf: False
       tf_frame_prefix_enable: False
-      cmd_vel_timeout: 0.5
+      cmd_vel_timeout: 2.0
       use_stamped_vel: True
       preserve_turning_radius: True
       publish_limited_velocity: True

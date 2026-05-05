@@ -7,12 +7,13 @@ __pycache__/
 clearpath_ws/build/
 clearpath_ws/install/
 clearpath_ws/log/
+clearpath_ws/paper_artifacts/
 
 # Generated experiment outputs. The manual low-shot dataset is explicitly kept below.
 clearpath_ws/logs/*
 !clearpath_ws/logs/
-!clearpath_ws/logs/rodney_dataset/
-!clearpath_ws/logs/rodney_dataset/**
+!clearpath_ws/logs/manual_dataset/
+!clearpath_ws/logs/manual_dataset/**
 
 # Trained model weights and derived archives should be published as releases or artifacts.
 *.pth
@@ -27,6 +28,11 @@ sim_setup/**/__pycache__/
 *.bag
 *.db3
 .ros/
+*:Zone.Identifier
+
+# Vendored upstream example data is intentionally omitted from this repo snapshot.
+Behavior-Intrinsic-Fear-main/Data/
+Behavior-Intrinsic-Fear-main/CarRacingTesting/Data/
 
 # OS/editor noise
 .DS_Store

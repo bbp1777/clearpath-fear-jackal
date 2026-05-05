@@ -38,7 +38,7 @@ class SMANNAdapter:
     def __init__(
         self,
         checkpoint_path: str = '',
-        repo_path: str = '/workspaces/Behavior-Intrinsic-Fear-main/CarRacingTesting',
+        repo_path: str = '/workspaces/clearpath_docker/Behavior-Intrinsic-Fear-main/CarRacingTesting',
         image_size: int = 84,
         lookback: int = 3,
         fear_threshold: float = 0.5,
@@ -311,16 +311,23 @@ class SMANNAdapter:
         epochs: int = 20,
         batch_size: int = 8,
         learning_rate: float = 1e-4,
-    ) -> dict[str, float | int | bool]:
+        validation_observations: np.ndarray | None = None,
+        validation_class_numbers: np.ndarray | None = None,
+    ) -> dict[str, object]:
         """
         Train the SMANN model offline on exported Jackal windows.
         """
-        metrics: dict[str, float | int | bool] = {
+        metrics: dict[str, object] = {
             'trained': False,
             'samples': int(len(observations)) if observations is not None else 0,
             'epochs': int(max(epochs, 0)),
             'batches': 0,
             'loss': 0.0,
+            'final_epoch_loss': 0.0,
+            'best_epoch_loss': 0.0,
+            'epoch_losses': [],
+            'validation_epoch_losses': [],
+            'validation_epoch_accuracy': [],
         }
 
         if torch is None or nn is None or optim is None:
@@ -349,6 +356,9 @@ class SMANNAdapter:
         self._ensure_optimizer(float(learning_rate))
         total_loss = 0.0
         total_batches = 0
+        epoch_losses: list[float] = []
+        validation_epoch_losses: list[float] = []
+        validation_epoch_accuracy: list[float] = []
         effective_batch_size = max(int(batch_size), 1)
         epochs = max(int(epochs), 1)
         rng = np.random.default_rng(0)
@@ -391,9 +401,21 @@ class SMANNAdapter:
                     continue
 
                 epoch_mean_loss = epoch_loss / float(epoch_batches)
+                epoch_losses.append(float(epoch_mean_loss))
                 logger.info(
                     f'SMANN supervised epoch {epoch_index + 1}/{epochs} mean loss {epoch_mean_loss:.4f}.'
                 )
+                if validation_observations is not None and validation_class_numbers is not None:
+                    validation_metrics = self.evaluate_supervised_dataset(
+                        validation_observations,
+                        validation_class_numbers,
+                        logger,
+                        batch_size=effective_batch_size,
+                        log_summary=False,
+                    )
+                    validation_epoch_losses.append(float(validation_metrics.get('loss', 0.0)))
+                    validation_epoch_accuracy.append(float(validation_metrics.get('accuracy', 0.0)))
+                    self._model.train()
                 total_loss += epoch_loss
                 total_batches += epoch_batches
         except Exception as exc:
@@ -408,6 +430,124 @@ class SMANNAdapter:
         metrics['trained'] = True
         metrics['batches'] = total_batches
         metrics['loss'] = total_loss / float(total_batches)
+        metrics['epoch_losses'] = epoch_losses
+        metrics['validation_epoch_losses'] = validation_epoch_losses
+        metrics['validation_epoch_accuracy'] = validation_epoch_accuracy
+        metrics['final_epoch_loss'] = epoch_losses[-1] if epoch_losses else 0.0
+        metrics['best_epoch_loss'] = min(epoch_losses) if epoch_losses else 0.0
+        return metrics
+
+    def evaluate_supervised_dataset(
+        self,
+        observations: np.ndarray,
+        class_numbers: np.ndarray,
+        logger,
+        batch_size: int = 8,
+        log_summary: bool = True,
+    ) -> dict[str, object]:
+        """
+        Evaluate the current SMANN classifier on labeled Jackal windows.
+        """
+        metrics: dict[str, object] = {
+            'samples': int(len(observations)) if observations is not None else 0,
+            'loss': 0.0,
+            'accuracy': 0.0,
+            'unsafe_precision': 0.0,
+            'unsafe_recall': 0.0,
+            'unsafe_f1': 0.0,
+            'true_unsafe': 0,
+            'false_unsafe': 0,
+            'true_safe': 0,
+            'false_safe': 0,
+            'unsafe_probabilities': [],
+            'class_numbers': [],
+            'predictions': [],
+        }
+        if torch is None or self._model is None or self._criterion is None:
+            return metrics
+        if observations is None or class_numbers is None:
+            return metrics
+
+        observations = np.asarray(observations, dtype=np.uint8)
+        class_numbers = np.asarray(class_numbers, dtype=np.int64)
+        if observations.ndim != 5 or len(observations) == 0:
+            return metrics
+
+        effective_batch_size = max(int(batch_size), 1)
+        total_loss = 0.0
+        total_batches = 0
+        predictions: list[int] = []
+        unsafe_probabilities: list[float] = []
+
+        self._model.eval()
+        try:
+            with torch.no_grad():
+                for start in range(0, len(observations), effective_batch_size):
+                    batch_windows = observations[start:start + effective_batch_size].astype(np.float32) / 255.0
+                    labels_np = class_numbers[start:start + effective_batch_size].astype(np.int64)
+                    inputs = torch.from_numpy(batch_windows).permute(1, 0, 2, 3, 4).contiguous()
+                    labels = torch.from_numpy(labels_np)
+                    delimiter = torch.zeros((len(labels_np), 2), dtype=torch.float32)
+
+                    self._model.init_sequence(len(labels_np))
+                    logits, _ = self._model(
+                        x=inputs,
+                        delimeter=delimiter,
+                        previous_state=None,
+                        seq=self.lookback,
+                    )
+                    loss = self._criterion(logits, labels)
+                    probabilities = functional.softmax(logits, dim=-1)
+                    batch_predictions = torch.argmax(probabilities, dim=-1)
+
+                    total_loss += float(loss.item())
+                    total_batches += 1
+                    predictions.extend(int(value) for value in batch_predictions.cpu().numpy().tolist())
+                    unsafe_probabilities.extend(float(value) for value in probabilities[:, 0].cpu().numpy().tolist())
+        except Exception as exc:
+            logger.warning(f'SMANN supervised evaluation failed: {exc}')
+            return metrics
+
+        if total_batches == 0:
+            return metrics
+
+        labels = class_numbers.astype(np.int64)
+        preds = np.asarray(predictions, dtype=np.int64)
+        true_unsafe = int(np.sum((labels == 0) & (preds == 0)))
+        false_unsafe = int(np.sum((labels == 1) & (preds == 0)))
+        true_safe = int(np.sum((labels == 1) & (preds == 1)))
+        false_safe = int(np.sum((labels == 0) & (preds == 1)))
+        accuracy = float(np.mean(preds == labels)) if len(labels) else 0.0
+        unsafe_precision = true_unsafe / max(true_unsafe + false_unsafe, 1)
+        unsafe_recall = true_unsafe / max(true_unsafe + false_safe, 1)
+        unsafe_f1 = (
+            2.0 * unsafe_precision * unsafe_recall / max(unsafe_precision + unsafe_recall, 1.0e-12)
+        )
+
+        metrics.update(
+            {
+                'loss': total_loss / float(total_batches),
+                'accuracy': accuracy,
+                'unsafe_precision': float(unsafe_precision),
+                'unsafe_recall': float(unsafe_recall),
+                'unsafe_f1': float(unsafe_f1),
+                'true_unsafe': true_unsafe,
+                'false_unsafe': false_unsafe,
+                'true_safe': true_safe,
+                'false_safe': false_safe,
+                'unsafe_probabilities': unsafe_probabilities,
+                'class_numbers': labels.astype(int).tolist(),
+                'predictions': predictions,
+            }
+        )
+        if log_summary:
+            logger.info(
+                'SMANN supervised evaluation '
+                f"samples={metrics['samples']} "
+                f"loss={float(metrics['loss']):.4f} "
+                f"accuracy={accuracy:.3f} "
+                f"unsafe_f1={unsafe_f1:.3f}"
+            )
         return metrics
 
     def save_checkpoint(self, checkpoint_dir: str, logger) -> bool:
@@ -541,4 +681,3 @@ class SMANNAdapter:
                 return os.path.join(os.path.dirname(checkpoint_path), '')
 
         return None
-

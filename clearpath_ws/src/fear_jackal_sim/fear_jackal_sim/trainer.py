@@ -43,6 +43,10 @@ class FearTrainer(Node):
         self.environment_config = self._read_environment_config()
         self.agent_config = self._read_agent_config()
         self.trainer_config = self._read_trainer_config()
+        self.run_artifact_dir = self._create_run_artifact_dir()
+        self._configure_run_artifact_paths()
+        self.episode_summaries: list[dict[str, object]] = []
+        self._run_complete = False
 
         self.writer = self._create_writer()
         self.environment = FearEnvironment(self, self.environment_config)
@@ -93,6 +97,7 @@ class FearTrainer(Node):
         self.declare_parameter('goal_coverage_topic', '/jackal_sidewalk/goal/coverage')
         self.declare_parameter('collision_topic', '/jackal_sidewalk/collision')
         self.declare_parameter('cmd_vel_topic', '/jackal_sidewalk/cmd_vel')
+        self.declare_parameter('odom_topic', '/jackal_sidewalk/platform/odom')
         self.declare_parameter('world_name', 'mini_sidewalk')
         self.declare_parameter('model_name', 'jackal_sidewalk/robot')
         self.declare_parameter('setup_path', '/workspaces/clearpath_docker/sim_setup')
@@ -106,8 +111,10 @@ class FearTrainer(Node):
         self.declare_parameter('spawn_y', 0.0)
         self.declare_parameter('spawn_z', 0.20)
         self.declare_parameter('spawn_yaw', 0.0)
-        self.declare_parameter('max_episode_steps', 400)
-        self.declare_parameter('goal_completion_threshold', 0.30)
+        self.declare_parameter('goal_position_x', 12.5)
+        self.declare_parameter('goal_position_y', 0.0)
+        self.declare_parameter('max_episode_steps', 500)
+        self.declare_parameter('goal_completion_threshold', 0.50)
         self.declare_parameter('reset_timeout_s', 5.0)
         self.declare_parameter('reset_settle_s', 1.0)
         self.declare_parameter('sim_relaunch_timeout_s', 45.0)
@@ -115,41 +122,34 @@ class FearTrainer(Node):
         self.declare_parameter('sim_time_rewind_threshold_s', 2.0)
         self.declare_parameter('post_reset_discard_collision_messages', 2)
         self.declare_parameter('lookback', 3)
-        self.declare_parameter('reward_mode', 'combined')
+        self.declare_parameter('reward_mode', 'external_only')
         self.declare_parameter('external_reward_scale', 1.0)
         self.declare_parameter('intrinsic_reward_scale', 1.0)
         self.declare_parameter('replay_buffer_capacity', 5000)
-        self.declare_parameter('policy_hidden_dim', 64)
         self.declare_parameter('action_linear_speed', 0.40)
         self.declare_parameter('action_angular_speed', 0.75)
-        # This keeps the default live evaluator on the heuristic action source until a frozen PPO checkpoint exists.
-        self.declare_parameter('use_policy_network', False)
+        # The default PPO path now uses a Rodney-style RGB-D CNN policy head.
+        self.declare_parameter('use_policy_network', True)
         self.declare_parameter('policy_learning_rate', 3.0e-4)
         self.declare_parameter('value_learning_rate', 1.0e-3)
-        self.declare_parameter('policy_temperature', 1.35)
-        self.declare_parameter('exploration_epsilon', 0.10)
         self.declare_parameter('discount_factor', 0.99)
         self.declare_parameter('ppo_update_epochs', 4)
         self.declare_parameter('ppo_clip_epsilon', 0.20)
         self.declare_parameter('entropy_coefficient', 0.03)
         self.declare_parameter('critic_loss_coefficient', 0.5)
         self.declare_parameter('gradient_clip_norm', 1.0)
-        self.declare_parameter('goal_progress_scale', 0.0)
-        self.declare_parameter('goal_alignment_scale', 0.0)
-        self.declare_parameter('step_penalty', 0.0)
-        self.declare_parameter('collision_penalty', 0.0)
         self.declare_parameter('goal_reward_bonus', 1.0)
-        # This makes SMANN the default fear backend for the live evaluator.
-        self.declare_parameter('fear_model_mode', 'smann')
+        # Base PPO defaults to no intrinsic fear; combined SMANN runs override this at launch.
+        self.declare_parameter('fear_model_mode', 'none')
         self.declare_parameter('manual_memory_dataset_dir', '')
         self.declare_parameter('manual_memory_bank_path', '')
         self.declare_parameter('memory_similarity_image_size', 84)
         self.declare_parameter('memory_similarity_depth_clip_m', 5.0)
         # This points the live evaluator at the offline Jackal SMANN checkpoint.
-        self.declare_parameter('smann_checkpoint', '/workspaces/clearpath_docker/clearpath_ws/logs/rodney_training/jackal_mann_independent/weights')
-        self.declare_parameter('smann_dataset_dir', '/workspaces/clearpath_docker/clearpath_ws/logs/rodney_dataset')
+        self.declare_parameter('smann_checkpoint', '/workspaces/clearpath_docker/clearpath_ws/logs/smann_training/smann_grid/final_selected/weights')
+        self.declare_parameter('smann_dataset_dir', '/workspaces/clearpath_docker/clearpath_ws/logs/manual_dataset')
         # This points the adapter at the CarRacingTesting source tree used during training.
-        self.declare_parameter('fear_repo_path', '/workspaces/Behavior-Intrinsic-Fear-main/CarRacingTesting')
+        self.declare_parameter('fear_repo_path', '/workspaces/clearpath_docker/Behavior-Intrinsic-Fear-main/CarRacingTesting')
         self.declare_parameter('sanchez_upstream_repo', 'https://github.com/ras8047/Behavior-Intrinsic-Fear')
         self.declare_parameter('sanchez_upstream_commit', '')
         self.declare_parameter('smann_image_size', 84)
@@ -158,7 +158,7 @@ class FearTrainer(Node):
         self.declare_parameter('fear_reactive_linear_speed', 0.12)
         self.declare_parameter('fear_reactive_turn_speed', 0.90)
         # This shorter default keeps stamped velocity commands fresh during frozen evaluation.
-        self.declare_parameter('control_period_s', 0.1)
+        self.declare_parameter('control_period_s', 0.5)
         self.declare_parameter('train_every_n_steps', 64)
         self.declare_parameter('vicarious_update_every_n_episodes', 1)
         self.declare_parameter('tensorboard_log_dir', '/workspaces/clearpath_docker/clearpath_ws/logs/tensorboard')
@@ -166,9 +166,12 @@ class FearTrainer(Node):
         self.declare_parameter('enable_online_smann_updates', False)
         # This flag disables PPO learning so live runs stay frozen for evaluation.
         self.declare_parameter('evaluation_only', False)
-        self.declare_parameter('run_name', 'fear_trainer')
+        self.declare_parameter('run_name', 'ppo_rgbdcnn_base')
         self.declare_parameter('archive_episodes', True)
         self.declare_parameter('episode_archive_dir', '/workspaces/clearpath_docker/clearpath_ws/logs/episode_archives')
+        self.declare_parameter('max_episodes', 50)
+        self.declare_parameter('random_seed', 0)
+        self.declare_parameter('run_artifact_dir', '/workspaces/clearpath_docker/clearpath_ws/logs/paper_runs_rgbdcnn')
 
     def _read_environment_config(self) -> EnvironmentConfig:
         """
@@ -183,6 +186,7 @@ class FearTrainer(Node):
             goal_coverage_topic=self.get_parameter('goal_coverage_topic').value,
             collision_topic=self.get_parameter('collision_topic').value,
             cmd_vel_topic=self.get_parameter('cmd_vel_topic').value,
+            odom_topic=self.get_parameter('odom_topic').value,
             world_name=self.get_parameter('world_name').value,
             model_name=self.get_parameter('model_name').value,
             setup_path=str(self.get_parameter('setup_path').value),
@@ -195,6 +199,8 @@ class FearTrainer(Node):
             spawn_y=float(self.get_parameter('spawn_y').value),
             spawn_z=float(self.get_parameter('spawn_z').value),
             spawn_yaw=float(self.get_parameter('spawn_yaw').value),
+            goal_position_x=float(self.get_parameter('goal_position_x').value),
+            goal_position_y=float(self.get_parameter('goal_position_y').value),
             max_episode_steps=int(self.get_parameter('max_episode_steps').value),
             goal_completion_threshold=float(self.get_parameter('goal_completion_threshold').value),
             reset_timeout_s=float(self.get_parameter('reset_timeout_s').value),
@@ -215,24 +221,17 @@ class FearTrainer(Node):
             external_reward_scale=float(self.get_parameter('external_reward_scale').value),
             intrinsic_reward_scale=float(self.get_parameter('intrinsic_reward_scale').value),
             replay_buffer_capacity=int(self.get_parameter('replay_buffer_capacity').value),
-            policy_hidden_dim=int(self.get_parameter('policy_hidden_dim').value),
             action_linear_speed=float(self.get_parameter('action_linear_speed').value),
             action_angular_speed=float(self.get_parameter('action_angular_speed').value),
             use_policy_network=bool(self.get_parameter('use_policy_network').value),
             policy_learning_rate=float(self.get_parameter('policy_learning_rate').value),
             value_learning_rate=float(self.get_parameter('value_learning_rate').value),
-            policy_temperature=float(self.get_parameter('policy_temperature').value),
-            exploration_epsilon=float(self.get_parameter('exploration_epsilon').value),
             discount_factor=float(self.get_parameter('discount_factor').value),
             ppo_update_epochs=int(self.get_parameter('ppo_update_epochs').value),
             ppo_clip_epsilon=float(self.get_parameter('ppo_clip_epsilon').value),
             entropy_coefficient=float(self.get_parameter('entropy_coefficient').value),
             critic_loss_coefficient=float(self.get_parameter('critic_loss_coefficient').value),
             gradient_clip_norm=float(self.get_parameter('gradient_clip_norm').value),
-            goal_progress_scale=float(self.get_parameter('goal_progress_scale').value),
-            goal_alignment_scale=float(self.get_parameter('goal_alignment_scale').value),
-            step_penalty=float(self.get_parameter('step_penalty').value),
-            collision_penalty=float(self.get_parameter('collision_penalty').value),
             goal_reward_bonus=float(self.get_parameter('goal_reward_bonus').value),
             fear_model_mode=str(self.get_parameter('fear_model_mode').value),
             manual_memory_dataset_dir=str(self.get_parameter('manual_memory_dataset_dir').value),
@@ -249,6 +248,7 @@ class FearTrainer(Node):
             fear_reactive_policy=bool(self.get_parameter('fear_reactive_policy').value),
             fear_reactive_linear_speed=float(self.get_parameter('fear_reactive_linear_speed').value),
             fear_reactive_turn_speed=float(self.get_parameter('fear_reactive_turn_speed').value),
+            random_seed=int(self.get_parameter('random_seed').value),
         )
 
     def _read_trainer_config(self) -> TrainerConfig:
@@ -267,7 +267,28 @@ class FearTrainer(Node):
             run_name=str(self.get_parameter('run_name').value),
             archive_episodes=bool(self.get_parameter('archive_episodes').value),
             episode_archive_dir=str(self.get_parameter('episode_archive_dir').value),
+            max_episodes=int(self.get_parameter('max_episodes').value),
+            run_artifact_dir=str(self.get_parameter('run_artifact_dir').value),
         )
+
+    def _create_run_artifact_dir(self) -> str:
+        """
+        Create the stable per-run directory used for paper summaries and checkpoints.
+        """
+        root = self.trainer_config.run_artifact_dir
+        run_name = self.trainer_config.run_name or 'fear_trainer'
+        run_dir = os.path.join(root, run_name)
+        os.makedirs(run_dir, exist_ok=True)
+        return run_dir
+
+    def _configure_run_artifact_paths(self) -> None:
+        """
+        Keep per-run episode archives beside the run summary so seeds do not collide.
+        """
+        default_archive_dir = '/workspaces/clearpath_docker/clearpath_ws/logs/episode_archives'
+        if self.trainer_config.episode_archive_dir == default_archive_dir:
+            self.trainer_config.episode_archive_dir = os.path.join(self.run_artifact_dir, 'episode_archives')
+        os.makedirs(self.trainer_config.episode_archive_dir, exist_ok=True)
 
     def _create_writer(self) -> Optional[SummaryWriter]:
         """
@@ -304,9 +325,13 @@ class FearTrainer(Node):
             'sanchez_upstream_commit': self.agent_config.sanchez_upstream_commit,
             'max_episode_steps': self.environment_config.max_episode_steps,
             'goal_completion_threshold': self.environment_config.goal_completion_threshold,
+            'control_period_s': self.trainer_config.control_period_s,
+            'max_episodes': self.trainer_config.max_episodes,
+            'random_seed': self.agent_config.random_seed,
             'evaluation_only': self.trainer_config.evaluation_only,
             'enable_online_smann_updates': self.trainer_config.enable_online_smann_updates,
             'run_name': self.trainer_config.run_name,
+            'run_artifact_dir': self.run_artifact_dir,
         }
         writer.add_text('run/metadata', f'```json\n{json.dumps(metadata, indent=2)}\n```', 0)
 
@@ -366,6 +391,9 @@ class FearTrainer(Node):
         Run one control-loop tick: handle resets, step the policy once, record reward, and
         trigger PPO updates when enough rollout data has been gathered.
         """
+        if self._run_complete:
+            return
+
         # The trainer behaves like a small state machine: wait for reset readiness,
         # start an episode, take one step, then repeat until a terminal event occurs.
         if self._reset_pending:
@@ -529,6 +557,7 @@ class FearTrainer(Node):
             self.writer.add_scalar('step/intrinsic_reward', float(intrinsic_reward), self.global_step)
             self.writer.add_scalar('step/combined_reward', float(self.agent.last_combined_reward), self.global_step)
             self.writer.add_scalar('step/goal_coverage', float(state.goal_coverage), self.global_step)
+            self.writer.add_scalar('step/distance_to_goal', float(self.environment.current_goal_distance()), self.global_step)
             self.writer.add_scalar('step/collision_flag', float(state.collision), self.global_step)
             self.writer.add_scalar('step/goal_reached', float(state.goal_reached), self.global_step)
             if self.agent.fear_model_mode != 'none':
@@ -582,6 +611,7 @@ class FearTrainer(Node):
             f'external={self.episode_external_reward:.3f} '
             f'intrinsic={self.episode_intrinsic_reward:.3f} '
             f'combined={self.episode_combined_reward:.3f} '
+            f'closest_distance_to_goal={self.environment.closest_goal_distance():.3f} '
             f'mean_fear={mean_fear_score:.3f} '
             f'max_fear={self.episode_fear_max:.3f} '
             f'fear_active_fraction={fear_active_fraction:.3f} '
@@ -598,6 +628,7 @@ class FearTrainer(Node):
             self.writer.add_scalar('episode/goal_reached', float(final_state.goal_reached), self.episode_index)
             self.writer.add_scalar('episode/terminal_collision', float(final_state.collision), self.episode_index)
             self.writer.add_scalar('episode/goal_coverage_final', float(final_state.goal_coverage), self.episode_index)
+            self.writer.add_scalar('episode/closest_distance_to_goal', float(self.environment.closest_goal_distance()), self.episode_index)
             if self.agent.fear_model_mode != 'none':
                 self.writer.add_scalar('fear/raw_unsafe_probability_mean', mean_fear_score, self.episode_index)
                 self.writer.add_scalar('fear/raw_unsafe_probability_max', self.episode_fear_max, self.episode_index)
@@ -612,6 +643,13 @@ class FearTrainer(Node):
         if (not self.trainer_config.evaluation_only) and self.agent.actor is not None:
             self.agent.train_policy_from_rollout(min_steps=1, force=True)
 
+        archive_summary = {
+            'saved': False,
+            'path': '',
+            'windows': 0,
+            'danger_windows': 0,
+            'safe_windows': 0,
+        }
         if self.trainer_config.archive_episodes:
             archive_summary = archive_episode_transitions(
                 self.trainer_config.episode_archive_dir,
@@ -640,7 +678,180 @@ class FearTrainer(Node):
         if self.trainer_config.clear_buffer_on_reset:
             self.clear_memory_buffers()
 
+        self._record_episode_summary(
+            final_state=final_state,
+            mean_fear_score=mean_fear_score,
+            fear_active_fraction=fear_active_fraction,
+            archive_summary=archive_summary,
+        )
+        self._write_run_summary(status='running')
+
+        if self._max_episodes_reached():
+            self._complete_limited_run()
+            return
+
         self.episode_active = False
+
+    def _record_episode_summary(
+        self,
+        final_state,
+        mean_fear_score: float,
+        fear_active_fraction: float,
+        archive_summary: dict[str, object],
+    ) -> None:
+        """
+        Store one compact episode row for CSV/table aggregation after the run.
+        """
+        self.episode_summaries.append(
+            {
+                'episode': int(self.episode_index),
+                'global_step': int(self.global_step),
+                'external_return': float(self.episode_external_reward),
+                'intrinsic_return': float(self.episode_intrinsic_reward),
+                'combined_return': float(self.episode_combined_reward),
+                'length': int(final_state.step_index),
+                'goal_reached': bool(final_state.goal_reached),
+                'terminal_collision': bool(final_state.collision),
+                'truncated': bool(final_state.truncated),
+                'goal_coverage_final': float(final_state.goal_coverage),
+                'closest_distance_to_goal': float(self.environment.closest_goal_distance()),
+                'fear_raw_mean': float(mean_fear_score),
+                'fear_raw_max': float(self.episode_fear_max),
+                'fear_active_fraction': float(fear_active_fraction),
+                'policy_update_count': int(self.agent.policy_update_count),
+                'actor_loss_latest': float(self.agent.last_actor_loss),
+                'critic_loss_latest': float(self.agent.last_critic_loss),
+                'entropy_latest': float(self.agent.last_policy_entropy),
+                'clip_fraction_latest': float(self.agent.last_policy_clip_fraction),
+                'archive_path': str(archive_summary.get('path', '')),
+                'archive_windows': int(archive_summary.get('windows', 0)),
+                'archive_danger_windows': int(archive_summary.get('danger_windows', 0)),
+                'archive_safe_windows': int(archive_summary.get('safe_windows', 0)),
+            }
+        )
+
+    def _max_episodes_reached(self) -> bool:
+        """
+        Return true when the configured paper-run episode budget has completed.
+        """
+        max_episodes = int(self.trainer_config.max_episodes)
+        return bool(max_episodes > 0 and self.episode_index >= max_episodes)
+
+    def _run_metadata(self) -> dict[str, object]:
+        """
+        Return run-level metadata shared by TensorBoard, summaries, and checkpoints.
+        """
+        effective_fear_model_mode = (
+            'none' if self.agent_config.reward_mode == 'external_only' else self.agent_config.fear_model_mode
+        )
+        return {
+            'run_name': self.trainer_config.run_name,
+            'random_seed': int(self.agent_config.random_seed),
+            'reward_mode': self.agent_config.reward_mode,
+            'fear_model_mode': self.agent_config.fear_model_mode,
+            'effective_fear_model_mode': effective_fear_model_mode,
+            'smann_fear_threshold': float(self.agent_config.smann_fear_threshold),
+            'intrinsic_reward_scale': float(self.agent_config.intrinsic_reward_scale),
+            'max_episodes': int(self.trainer_config.max_episodes),
+            'max_episode_steps': int(self.environment_config.max_episode_steps),
+            'control_period_s': float(self.trainer_config.control_period_s),
+            'max_episode_sim_time_s': float(self.trainer_config.control_period_s * self.environment_config.max_episode_steps),
+            'goal_completion_threshold': float(self.environment_config.goal_completion_threshold),
+            'goal_position_x': float(self.environment_config.goal_position_x),
+            'goal_position_y': float(self.environment_config.goal_position_y),
+            'evaluation_only': bool(self.trainer_config.evaluation_only),
+            'enable_online_smann_updates': bool(self.trainer_config.enable_online_smann_updates),
+            'smann_checkpoint': self.agent_config.smann_checkpoint,
+            'smann_dataset_dir': self.agent_config.smann_dataset_dir,
+            'run_artifact_dir': self.run_artifact_dir,
+        }
+
+    def _aggregate_episode_summaries(self) -> dict[str, object]:
+        """
+        Compute run-level table metrics from recorded episodes.
+        """
+        episodes = self.episode_summaries
+        if not episodes:
+            return {
+                'episodes_completed': 0,
+                'success_rate': 0.0,
+                'collision_rate': 0.0,
+                'mean_external_return': 0.0,
+                'mean_intrinsic_return': 0.0,
+                'mean_combined_return': 0.0,
+                'mean_episode_length': 0.0,
+                'closest_distance_to_goal': None,
+                'mean_closest_distance_to_goal': 0.0,
+                'episodes_to_first_success': None,
+                'final_20_success_rate': 0.0,
+            }
+
+        successes = [1.0 if row['goal_reached'] else 0.0 for row in episodes]
+        collisions = [1.0 if row['terminal_collision'] else 0.0 for row in episodes]
+        first_success = next((int(row['episode']) for row in episodes if row['goal_reached']), None)
+        final_window = successes[-min(20, len(successes)):]
+        return {
+            'episodes_completed': len(episodes),
+            'success_rate': float(sum(successes) / len(successes)),
+            'collision_rate': float(sum(collisions) / len(collisions)),
+            'mean_external_return': float(sum(float(row['external_return']) for row in episodes) / len(episodes)),
+            'mean_intrinsic_return': float(sum(float(row['intrinsic_return']) for row in episodes) / len(episodes)),
+            'mean_combined_return': float(sum(float(row['combined_return']) for row in episodes) / len(episodes)),
+            'mean_episode_length': float(sum(float(row['length']) for row in episodes) / len(episodes)),
+            'closest_distance_to_goal': float(min(float(row['closest_distance_to_goal']) for row in episodes)),
+            'mean_closest_distance_to_goal': float(
+                sum(float(row['closest_distance_to_goal']) for row in episodes) / len(episodes)
+            ),
+            'episodes_to_first_success': first_success,
+            'final_20_success_rate': float(sum(final_window) / len(final_window)),
+        }
+
+    def _write_run_summary(
+        self,
+        status: str,
+        checkpoint_summary: dict[str, object] | None = None,
+    ) -> str:
+        """
+        Persist the run summary JSON used by paper artifact aggregation.
+        """
+        summary_path = os.path.join(self.run_artifact_dir, 'run_summary.json')
+        payload = {
+            'status': status,
+            'metadata': self._run_metadata(),
+            'aggregates': self._aggregate_episode_summaries(),
+            'episodes': self.episode_summaries,
+            'checkpoint': checkpoint_summary or {},
+        }
+        with open(summary_path, 'w', encoding='ascii') as handle:
+            json.dump(payload, handle, indent=2)
+        return summary_path
+
+    def _complete_limited_run(self) -> None:
+        """
+        Export final run artifacts and stop the ROS spin once max_episodes is reached.
+        """
+        if self._run_complete:
+            return
+
+        self._run_complete = True
+        self.episode_active = False
+        self._publish_stop_burst(repeats=2, interval_s=0.05)
+        checkpoint_summary = self.agent.save_policy_checkpoint(
+            os.path.join(self.run_artifact_dir, 'checkpoints'),
+            metadata=self._run_metadata(),
+        )
+        summary_path = self._write_run_summary(status='complete', checkpoint_summary=checkpoint_summary)
+        if self.writer is not None:
+            self.writer.flush()
+        self.get_logger().info(
+            f'Completed configured max_episodes={self.trainer_config.max_episodes}; '
+            f'run summary saved to {summary_path}.'
+        )
+        self._stop_managed_sim_process()
+        try:
+            rclpy.shutdown()
+        except Exception:
+            pass
 
     def clear_memory_buffers(self) -> None:
         """
@@ -1007,7 +1218,3 @@ def main(args=None) -> None:
             rclpy.shutdown()
         except Exception:
             pass
-
-
-
-

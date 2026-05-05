@@ -31,7 +31,7 @@ def generate_launch_description():
     # This declares the fear threshold sweep argument.
     fear_threshold_arg = DeclareLaunchArgument('smann_fear_threshold', default_value='0.50')
     # This declares the checkpoint override argument.
-    checkpoint_arg = DeclareLaunchArgument('smann_checkpoint', default_value='/workspaces/clearpath_docker/clearpath_ws/logs/rodney_training/jackal_mann_independent/weights')
+    checkpoint_arg = DeclareLaunchArgument('smann_checkpoint', default_value='/workspaces/clearpath_docker/clearpath_ws/logs/smann_training/smann_grid/final_selected/weights')
 
     # This includes the simulator-only launch once at startup.
     simulator = IncludeLaunchDescription(PythonLaunchDescriptionSource(os.path.join(package_share, 'launch', 'sidewalk_sim.launch.py')))

@@ -4,6 +4,7 @@ CLI for offline supervised training of the Sanchez SMANN model on exported Jacka
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import logging
 import os
@@ -25,7 +26,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Train the Sanchez fear model on exported Jackal episode windows.')
     parser.add_argument(
         '--dataset-dir',
-        default='/workspaces/clearpath_docker/clearpath_ws/logs/rodney_dataset',
+        default='/workspaces/clearpath_docker/clearpath_ws/logs/manual_dataset',
         help='Directory containing observations.npy, class.npy, and class_number.npy.',
     )
     parser.add_argument(
@@ -35,7 +36,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         '--fear-repo-path',
-        default='/workspaces/Behavior-Intrinsic-Fear-main/CarRacingTesting',
+        default='/workspaces/clearpath_docker/Behavior-Intrinsic-Fear-main/CarRacingTesting',
         help='Path to the Behavior-Intrinsic-Fear CarRacingTesting source directory inside Docker.',
     )
     parser.add_argument(
@@ -113,14 +114,46 @@ def main() -> int:
             writer.close()
         return 1
 
+    epoch_losses = [float(loss) for loss in metrics.get('epoch_losses', [])]
+    loss_curve_path = os.path.join(args.checkpoint_dir, 'loss_curve.csv')
+    metrics_path = os.path.join(args.checkpoint_dir, 'training_metrics.json')
+    os.makedirs(args.checkpoint_dir, exist_ok=True)
+
+    with open(loss_curve_path, 'w', newline='', encoding='ascii') as handle:
+        csv_writer = csv.writer(handle)
+        csv_writer.writerow(['epoch', 'loss'])
+        for epoch, loss in enumerate(epoch_losses, start=1):
+            csv_writer.writerow([epoch, f'{loss:.10f}'])
+
+    metrics_payload = dict(metrics)
+    metrics_payload['epoch_losses'] = epoch_losses
+    metrics_payload['dataset_metadata'] = metadata
+    metrics_payload['checkpoint_dir'] = args.checkpoint_dir
+    metrics_payload['tensorboard_run_name'] = args.run_name
+    with open(metrics_path, 'w', encoding='ascii') as handle:
+        json.dump(metrics_payload, handle, indent=2)
+
     if writer is not None:
-        writer.add_scalar('smann_offline/loss', float(metrics.get('loss', 0.0)), 0)
+        for epoch, loss in enumerate(epoch_losses, start=1):
+            writer.add_scalar('smann_offline/epoch_loss', loss, epoch)
+            writer.add_scalar('loss/train_epoch', loss, epoch)
+        writer.add_scalar('smann_offline/mean_batch_loss_all_epochs', float(metrics.get('loss', 0.0)), 0)
+        writer.add_scalar('smann_offline/final_epoch_loss', float(metrics.get('final_epoch_loss', 0.0)), 0)
+        writer.add_scalar('smann_offline/best_epoch_loss', float(metrics.get('best_epoch_loss', 0.0)), 0)
         writer.add_scalar('smann_offline/samples', float(metrics.get('samples', 0)), 0)
         writer.add_scalar('smann_offline/epochs', float(metrics.get('epochs', 0)), 0)
         writer.add_scalar('smann_offline/batches', float(metrics.get('batches', 0)), 0)
+        writer.flush()
         writer.close()
 
-    logger.info('Final training metrics: %s', json.dumps(metrics, indent=2))
+    logger.info('SMANN loss curve saved to %s.', loss_curve_path)
+    logger.info('SMANN training metrics saved to %s.', metrics_path)
+    log_metrics = dict(metrics)
+    log_metrics['epoch_loss_count'] = len(epoch_losses)
+    log_metrics.pop('epoch_losses', None)
+    log_metrics.pop('validation_epoch_losses', None)
+    log_metrics.pop('validation_epoch_accuracy', None)
+    logger.info('Final training metrics: %s', json.dumps(log_metrics, indent=2))
     return 0
 
 

@@ -35,10 +35,10 @@ setup(
             'fear_goal_monitor = fear_jackal_sim.goal_monitor:main',
             'fear_dataset_exporter = fear_jackal_sim.fear_dataset_exporter:main',
             'train_smann = fear_jackal_sim.train_smann:main',
+            'train_smann_grid = fear_jackal_sim.train_smann_grid:main',
             'fear_manual_capture = fear_jackal_sim.fear_manual_capture:main',
+            'command_timeout_overrides = fear_jackal_sim.command_timeout_overrides:main',
             'train_memory_fear = fear_jackal_sim.train_memory_fear:main',
-            'sanchez_source_audit = fear_jackal_sim.sanchez_source_audit:main',
-            'fear_archive_outputs = fear_jackal_sim.experiment_artifacts:main',
         ],
     },
 )

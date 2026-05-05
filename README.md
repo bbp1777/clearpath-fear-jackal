@@ -1,41 +1,41 @@
 # Clearpath Jackal Fear-RL Sidewalk Simulator
 
-This repository contains the ROS 2 Jazzy / Gazebo Harmonic Jackal simulation used for a sparse-reward fear-intrinsic reinforcement learning experiment.
+This repository contains the ROS 2 Jazzy / Gazebo Harmonic Jackal simulation used for sparse-reward PPO and PPO + SMANN fear experiments in the sidewalk environment. The Sanchez `Behavior-Intrinsic-Fear` codebase is vendored directly into this repository, so no external clone is required after download.
 
 The main experiment compares:
 
-- **Base PPO**: sparse external reward only.
-- **PPO + Sanchez SMANN fear**: the same PPO setup with a frozen offline-trained SMANN model that adds thresholded negative intrinsic reward for unsafe behavior.
+- **Base PPO**: sparse external reward only
+- **PPO + SMANN fear**: the same PPO setup with a frozen offline-trained SMANN model that adds thresholded negative intrinsic reward for unsafe behavior
 
-The goal reward is sparse: the agent receives `+1` only when the RGB image reaches the configured green goal-block coverage threshold. Grass and obstacle contacts terminate the episode but do not add an external penalty.
+The task reward is sparse: the agent receives `+1` only when the RGB image reaches the configured goal-coverage threshold. Grass and obstacle contacts terminate the episode but do not add an external penalty. The default training setup uses 7 seeds, 50 episodes per seed, 750 control steps per episode, and a 0.5 s control period.
 
 ## Repository Layout
 
-- `Dockerfile`: ROS 2 Jazzy / Clearpath simulation container.
-- `scripts/`: development and smoke-test helpers.
-- `sim_setup/`: Clearpath robot configuration and generated launch/config files used by the simulator.
-- `clearpath_ws/src/fear_jackal_sim/`: custom ROS 2 package with the trainer, Gazebo world, goal monitor, SMANN adapter, TensorBoard logging, and tests.
-- `clearpath_ws/logs/rodney_dataset/`: manually created 63-sample Jackal RGB-D low-shot dataset for offline SMANN training.
+- `Behavior-Intrinsic-Fear-main/`: vendored upstream Sanchez code used by the SMANN adapter at runtime
+- `Dockerfile`: ROS 2 Jazzy / Clearpath simulation container
+- `scripts/`: development shell and smoke-test helpers
+- `sim_setup/`: Clearpath robot configuration and generated launch/config files used by the simulator
+- `clearpath_ws/src/fear_jackal_sim/`: custom ROS 2 package with the trainer, goal monitor, SMANN adapter, dataset tooling, launch files, and tests
+- `clearpath_ws/src/jackal_smann_eval/`: optional frozen evaluation package for one-shot SMANN runs
+- `clearpath_ws/logs/manual_dataset/`: tracked 63-sample Jackal RGB-D low-shot dataset for offline SMANN training
 
-Generated build products, TensorBoard runs, episode archives, and trained weights are intentionally ignored by git. Trained SMANN weights should be regenerated from the manual dataset or shared separately as release artifacts.
+Generated build products, logs, checkpoints, TensorBoard runs, episode archives, and paper figures are intentionally ignored by git.
 
 ## Manual Dataset
 
-The checked-in dataset under `clearpath_ws/logs/rodney_dataset/` is not from the upstream Sanchez repository. It was manually created for this Jackal setup.
+The checked-in dataset under `clearpath_ws/logs/manual_dataset/` was created for this Jackal setup and is not part of the upstream Sanchez repository.
 
 Label convention:
 
 - unsafe behavior: reward label `-1`, classifier class `0`
 - safe behavior: reward label `0`, classifier class `1`
 
-The dataset uses the Rodney-style prefix filenames:
+The dataset uses the Jackal-prefixed three-step filenames:
 
 - `Jackal-v0_lookback_3observations.npy`
 - `Jackal-v0_lookback_3class.npy`
 - `Jackal-v0_lookback_3class_number.npy`
 - `Jackal-v0_lookback_3reward.npy`
-
-The project loader supports both these prefixed filenames and canonical `observations.npy` / `class.npy` / `class_number.npy` names.
 
 Additional dataset provenance is stored in `clearpath_ws/src/fear_jackal_sim/config/manual_dataset_metadata.json`.
 
@@ -46,7 +46,7 @@ From WSL:
 ```bash
 cd /home/sting/clearpath_docker
 chmod +x scripts/dev_shell.sh
-./scripts/dev_shell.sh
+./scripts/dev_shell.sh --build
 ```
 
 Inside the container:
@@ -55,11 +55,45 @@ Inside the container:
 source /opt/ros/jazzy/setup.bash
 cd /workspaces/clearpath_docker/clearpath_ws
 rosdep install --from-paths src --ignore-src -r -y
-colcon build --symlink-install --packages-select fear_jackal_sim
+colcon build --symlink-install --packages-select fear_jackal_sim jackal_smann_eval
 source install/setup.bash
 ```
 
-## Run Base PPO
+## Offline SMANN Training
+
+Run the 5-fold grid search and train the selected final checkpoint:
+
+```bash
+ros2 run fear_jackal_sim train_smann_grid \
+  --dataset-dir /workspaces/clearpath_docker/clearpath_ws/logs/manual_dataset \
+  --fear-repo-path /workspaces/clearpath_docker/Behavior-Intrinsic-Fear-main/CarRacingTesting \
+  --output-dir /workspaces/clearpath_docker/clearpath_ws/logs/smann_training/smann_grid
+```
+
+Train a single SMANN checkpoint directly:
+
+```bash
+ros2 run fear_jackal_sim train_smann \
+  --dataset-dir /workspaces/clearpath_docker/clearpath_ws/logs/manual_dataset \
+  --checkpoint-dir /workspaces/clearpath_docker/clearpath_ws/logs/smann_training/manual_selected/weights \
+  --fear-repo-path /workspaces/clearpath_docker/Behavior-Intrinsic-Fear-main/CarRacingTesting \
+  --run-name smann_offline_manual_63
+```
+
+Each offline SMANN run writes loss curves and metrics next to the checkpoint directory.
+
+## Training Runs
+
+Set a run root and the final SMANN checkpoint you want to evaluate:
+
+```bash
+export RUN_ROOT=/workspaces/clearpath_docker/clearpath_ws/logs/runs_rgbdcnn
+export FINAL_SMANN=/workspaces/clearpath_docker/clearpath_ws/logs/smann_training/smann_grid/final_selected/weights
+```
+
+### Base PPO
+
+Single-seed example:
 
 ```bash
 ros2 launch fear_jackal_sim fear_training.launch.py \
@@ -68,35 +102,68 @@ ros2 launch fear_jackal_sim fear_training.launch.py \
   evaluation_only:=false \
   use_policy_network:=true \
   fear_model_mode:=none \
-  run_name:=ppo_sparse_base_001
+  max_episode_steps:=750 \
+  control_period_s:=0.5 \
+  goal_completion_threshold:=0.50 \
+  max_episodes:=50 \
+  random_seed:=1 \
+  run_artifact_dir:="$RUN_ROOT" \
+  run_name:=ppo_rgbdcnn_base_seed01
 ```
 
-In `external_only`, the trainer disables fear scoring so the baseline stays clean.
-
-## Run PPO + SMANN Fear
-
-First train or regenerate the SMANN checkpoint from the manual dataset:
+Seven-seed sweep:
 
 ```bash
-ros2 run fear_jackal_sim train_smann \
-  --dataset-dir /workspaces/clearpath_docker/clearpath_ws/logs/rodney_dataset \
-  --checkpoint-dir /workspaces/clearpath_docker/clearpath_ws/logs/rodney_training/jackal_mann_independent/weights \
-  --fear-repo-path /workspaces/Behavior-Intrinsic-Fear-main/CarRacingTesting \
-  --run-name smann_offline_manual_63
+for SEED_PAD in 01 02 03 04 05 06 07; do
+  SEED=$((10#$SEED_PAD))
+
+  ros2 launch fear_jackal_sim fear_training.launch.py \
+    manage_sim_process:=true \
+    reward_mode:=external_only \
+    evaluation_only:=false \
+    use_policy_network:=true \
+    fear_model_mode:=none \
+    max_episode_steps:=750 \
+    control_period_s:=0.5 \
+    goal_completion_threshold:=0.50 \
+    max_episodes:=50 \
+    random_seed:=$SEED \
+    run_artifact_dir:="$RUN_ROOT" \
+    run_name:=ppo_rgbdcnn_base_seed${SEED_PAD}
+done
 ```
 
-Then run PPO with frozen SMANN intrinsic fear:
+### PPO + SMANN Threshold Sweep
 
 ```bash
-ros2 launch fear_jackal_sim fear_training.launch.py \
-  manage_sim_process:=true \
-  reward_mode:=combined \
-  evaluation_only:=false \
-  use_policy_network:=true \
-  fear_model_mode:=smann \
-  smann_fear_threshold:=0.50 \
-  enable_online_smann_updates:=false \
-  run_name:=ppo_sparse_smann_t050_001
+for ITEM in "0.25 t025" "0.50 t050" "0.75 t075"; do
+  set -- $ITEM
+  THRESH=$1
+  TAG=$2
+
+  for SEED_PAD in 01 02 03 04 05 06 07; do
+    SEED=$((10#$SEED_PAD))
+
+    ros2 launch fear_jackal_sim fear_training.launch.py \
+      manage_sim_process:=true \
+      reward_mode:=combined \
+      evaluation_only:=false \
+      use_policy_network:=true \
+      fear_model_mode:=smann \
+      smann_checkpoint:="$FINAL_SMANN" \
+      smann_dataset_dir:=/workspaces/clearpath_docker/clearpath_ws/logs/manual_dataset \
+      smann_fear_threshold:=$THRESH \
+      enable_online_smann_updates:=false \
+      intrinsic_reward_scale:=1.0 \
+      max_episode_steps:=750 \
+      control_period_s:=0.5 \
+      goal_completion_threshold:=0.50 \
+      max_episodes:=50 \
+      random_seed:=$SEED \
+      run_artifact_dir:="$RUN_ROOT" \
+      run_name:=ppo_rgbdcnn_smann_${TAG}_seed${SEED_PAD}
+  done
+done
 ```
 
 SMANN intrinsic reward is thresholded in the Sanchez style:
@@ -120,52 +187,6 @@ Start TensorBoard inside the container:
 tensorboard --logdir /workspaces/clearpath_docker/clearpath_ws/logs/tensorboard --bind_all
 ```
 
-Important scalar groups include:
-
-- `episode/external_return`
-- `episode/intrinsic_return`
-- `episode/combined_return`
-- `episode/goal_reached`
-- `episode/terminal_collision`
-- `episode/goal_coverage_final`
-- `fear/raw_unsafe_probability_mean`
-- `fear/raw_unsafe_probability_max`
-- `fear/active_fraction`
-- `ppo/actor_loss`
-- `ppo/critic_loss`
-- `ppo/entropy`
-- `ppo/clip_fraction`
-
-## Source Audit
-
-To compare the local Sanchez code against the canonical upstream repository:
-
-```bash
-ros2 run fear_jackal_sim sanchez_source_audit
-```
-
-The audit writes reports under:
-
-```text
-/workspaces/clearpath_docker/clearpath_ws/logs/source_audits
-```
-
-This is useful for paper provenance, but it is not required for the simulator or training loop to run.
-
-## Archive Generated Outputs Before Fresh Runs
-
-Dry run:
-
-```bash
-ros2 run fear_jackal_sim fear_archive_outputs --dry-run
-```
-
-Archive generated outputs while preserving the manual dataset:
-
-```bash
-ros2 run fear_jackal_sim fear_archive_outputs
-```
-
 ## Tests
 
 ```bash
@@ -173,3 +194,9 @@ cd /workspaces/clearpath_docker/clearpath_ws/src/fear_jackal_sim
 source /opt/ros/jazzy/setup.bash
 PYTHONPATH=$PWD:$PYTHONPATH pytest -q test/test_research_alignment.py
 ```
+
+## Notes
+
+- The vendored `Behavior-Intrinsic-Fear-main` directory is the runtime source of truth for the SMANN adapter.
+- Generated run outputs under `clearpath_ws/logs/` are local working artifacts and are not versioned.
+- The tracked manual dataset is the only `logs/` content intentionally kept in git.

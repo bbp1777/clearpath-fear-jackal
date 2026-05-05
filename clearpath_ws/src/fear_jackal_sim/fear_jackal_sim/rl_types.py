@@ -32,18 +32,6 @@ class ObservationBundle:
     terminal: bool = False
     truncated: bool = False
 
-    def feature_vector(self, max_steps: int) -> list[float]:
-        """
-        Return a tiny fallback feature vector derived from the observation.
-        """
-        step_fraction = 0.0 if max_steps <= 0 else min(float(self.step_index) / float(max_steps), 1.0)
-        return [
-            float(self.goal_coverage),
-            float(self.collision),
-            float(step_fraction),
-            1.0 if self.depth_msg is not None else 0.0,
-        ]
-
     def summary(self) -> dict[str, float | bool | int]:
         """
         Serialize the observation into simple scalar fields for archives and logs.
@@ -89,6 +77,7 @@ class EnvironmentConfig:
     goal_coverage_topic: str = '/jackal_sidewalk/goal/coverage'
     collision_topic: str = '/jackal_sidewalk/collision'
     cmd_vel_topic: str = '/jackal_sidewalk/cmd_vel'
+    odom_topic: str = '/jackal_sidewalk/platform/odom'
     world_name: str = 'mini_sidewalk'
     model_name: str = 'jackal_sidewalk/robot'
     setup_path: str = '/workspaces/clearpath_docker/sim_setup'
@@ -101,8 +90,10 @@ class EnvironmentConfig:
     spawn_y: float = 0.0
     spawn_z: float = 0.20
     spawn_yaw: float = 0.0
-    max_episode_steps: int = 400
-    goal_completion_threshold: float = 0.30
+    goal_position_x: float = 12.5
+    goal_position_y: float = 0.0
+    max_episode_steps: int = 750
+    goal_completion_threshold: float = 0.50
     reset_timeout_s: float = 5.0
     reset_settle_s: float = 1.0
     sim_relaunch_timeout_s: float = 45.0
@@ -114,40 +105,33 @@ class EnvironmentConfig:
 @dataclass
 class AgentConfig:
     """
-    Configuration bundle for reward shaping, policy learning, and fear-model selection.
+    Configuration bundle for sparse-reward PPO learning and fear-model selection.
     """
     lookback: int = 3
-    reward_mode: str = 'combined'
+    reward_mode: str = 'external_only'
     external_reward_scale: float = 1.0
     intrinsic_reward_scale: float = 1.0
     replay_buffer_capacity: int = 5000
-    policy_hidden_dim: int = 64
     action_linear_speed: float = 0.40
     action_angular_speed: float = 0.75
     use_policy_network: bool = True
     policy_learning_rate: float = 3.0e-4
     value_learning_rate: float = 1.0e-3
-    policy_temperature: float = 1.35
-    exploration_epsilon: float = 0.10
     ppo_update_epochs: int = 4
     ppo_clip_epsilon: float = 0.20
     discount_factor: float = 0.99
     entropy_coefficient: float = 0.03
     critic_loss_coefficient: float = 0.5
     gradient_clip_norm: float = 1.0
-    goal_progress_scale: float = 0.0
-    goal_alignment_scale: float = 0.0
-    step_penalty: float = 0.0
-    collision_penalty: float = 0.0
     goal_reward_bonus: float = 1.0
-    fear_model_mode: str = 'smann'
+    fear_model_mode: str = 'none'
     manual_memory_dataset_dir: str = ''
     manual_memory_bank_path: str = ''
     memory_similarity_image_size: int = 84
     memory_similarity_depth_clip_m: float = 5.0
     smann_checkpoint: str = ''
-    smann_dataset_dir: str = '/workspaces/clearpath_docker/clearpath_ws/logs/rodney_dataset'
-    fear_repo_path: str = '/workspaces/Behavior-Intrinsic-Fear-main/CarRacingTesting'
+    smann_dataset_dir: str = '/workspaces/clearpath_docker/clearpath_ws/logs/manual_dataset'
+    fear_repo_path: str = '/workspaces/clearpath_docker/Behavior-Intrinsic-Fear-main/CarRacingTesting'
     sanchez_upstream_repo: str = 'https://github.com/ras8047/Behavior-Intrinsic-Fear'
     sanchez_upstream_commit: str = ''
     smann_image_size: int = 84
@@ -155,6 +139,7 @@ class AgentConfig:
     fear_reactive_policy: bool = False
     fear_reactive_linear_speed: float = 0.12
     fear_reactive_turn_speed: float = 0.90
+    random_seed: int = 0
 
 
 @dataclass
@@ -162,7 +147,7 @@ class TrainerConfig:
     """
     Configuration bundle for trainer cadence, logging, and archive behavior.
     """
-    control_period_s: float = 0.25
+    control_period_s: float = 0.5
     train_every_n_steps: int = 64
     vicarious_update_every_n_episodes: int = 1
     tensorboard_log_dir: str = '/workspaces/clearpath_docker/clearpath_ws/logs/tensorboard'
@@ -170,6 +155,8 @@ class TrainerConfig:
     enable_online_smann_updates: bool = False
     # This flag disables PPO weight updates during live evaluation runs.
     evaluation_only: bool = False
-    run_name: str = 'fear_trainer'
+    run_name: str = 'ppo_rgbdcnn_base'
     archive_episodes: bool = True
     episode_archive_dir: str = '/workspaces/clearpath_docker/clearpath_ws/logs/episode_archives'
+    max_episodes: int = 50
+    run_artifact_dir: str = '/workspaces/clearpath_docker/clearpath_ws/logs/paper_runs_rgbdcnn'
